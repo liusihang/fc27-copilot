@@ -6,7 +6,16 @@ Date: 2026-09-18
 
 `policy.json` is the only execution-permission surface. Agent arguments cannot raise its limits, add action types, remove protected items, or change the execution mode.
 
-The shipped policy is `observe` with zero spend and zero enabled action types. It rejects every account-changing batch before contacting EA or writing action-audit rows.
+The active policy is `suggest`. Every exact batch requires `confirmed=true` and remains subject to all amount, capacity, ownership, stale-state, protected-item, and idempotency checks. `auto` is disabled.
+
+The accepted low-value limits are:
+
+- minimum coin reserve: 45,000;
+- maximum single purchase, batch spend, and daily spend: 700 each;
+- maximum batch size: one action;
+- maximum ownership of the same card: four;
+- maximum tradepile usage: 20;
+- enabled actions: Buy Now, item move, and item listing.
 
 ## Modes
 
@@ -42,6 +51,14 @@ The Agent supplies exact targets and prices. The execution tool never selects a 
 
 Any rejection before step 8 leaves the audit tables unchanged and never contacts EA.
 
+## Action readback
+
+- Buy Now requires one newly observed item with the expected card ID and a negative coin delta after a complete synchronization.
+- Item move requires the requested destination in the complete synchronized state.
+- Item listing polls the Tradepile for up to ten seconds, then requires an active trade ID with the exact requested starting bid and Buy Now price in the runtime database.
+- A listing that appears after the immediate readback window is reconciled only when a later complete synchronization proves the same item and exact prices. The original action and batch are then marked complete with the evidence sync ID.
+- Failed readback never authorizes an automatic retry. The caller must inspect current state or replay the original batch ID.
+
 ## Replay behavior
 
 Reusing a `batch_id` with the same `expected_sync_id` and identical ordered action objects returns the stored batch and action results with `replayed=true`. The dispatcher is not called again.
@@ -54,3 +71,9 @@ Reusing a batch ID with different actions, or reusing an action ID or idempotenc
 - A simulated accepted batch produced one complete batch row and one complete action row, then returned the same result on replay while the dispatcher call count remained one.
 - The live Persona runtime remained in `observe`; a complete synthetic `buy_now` request returned `EXECUTION_DISABLED` and left `action_batches/actions` at `0/0`.
 - No live EA write method was invoked.
+
+## Issue #19 acceptance
+
+The user approved the bounded `suggest` policy above. On 2026-09-18, a 700-coin Buy Now, move to Tradepile, and 650/700 listing completed on the authenticated PC Persona. Complete synchronization proved the coin delta, acquired item ID, destination, active trade ID, and exact prices. Replaying the purchase and listing batches returned their stored results without dispatching another EA action.
+
+Detailed evidence is recorded in `docs/live-execution-acceptance-2026-09-18.md`. This acceptance keeps `auto` disabled.

@@ -1,8 +1,11 @@
+import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from fc27.actions import ActionDispatcher
+from fc27.errors import FC27Error
 from fc27.runtime import RuntimeManager
 
 
@@ -85,7 +88,15 @@ class ActionDispatcherTest(unittest.TestCase):
                 "max_price": 700,
             }
         )
-        self.assertEqual(self.bridge.calls, [("buyNow", {"trade_id": 900, "buy_now_price": 700})])
+        self.assertEqual(
+            self.bridge.calls,
+            [
+                (
+                    "buyNow",
+                    {"trade_id": 900, "definition_id": 200, "buy_now_price": 700},
+                )
+            ],
+        )
         self.assertEqual(result["item"]["item_id"], 2)
         self.assertEqual(result["coin_delta"], -700)
         with self.runtime.connect() as connection:
@@ -119,6 +130,16 @@ class ActionDispatcherTest(unittest.TestCase):
             "status": "active",
             "expires": 3600,
         }
+        self.bridge.responses["getTradepile"] = {
+            "auctionInfo": [
+                {
+                    "tradeId": 77,
+                    "startingBid": 650,
+                    "buyNowPrice": 700,
+                    "itemData": {"item_id": 1},
+                }
+            ]
+        }
 
         def list_sync(kind):
             return self.commit(
@@ -138,6 +159,97 @@ class ActionDispatcherTest(unittest.TestCase):
         )
         self.assertEqual(listed["listing"]["trade_id"], 77)
         self.assertEqual(listed["listing"]["buy_now_price"], 700)
+
+    def test_listing_readback_requires_requested_prices(self):
+        self.bridge.responses["getTradepile"] = {
+            "auctionInfo": [
+                {
+                    "tradeId": 77,
+                    "startingBid": 600,
+                    "buyNowPrice": 750,
+                    "itemData": {"item_id": 1},
+                }
+            ]
+        }
+
+        def list_sync(kind):
+            listing = {
+                "trade_id": 77,
+                "item_id": 1,
+                "starting_bid": 600,
+                "buy_now_price": 750,
+                "current_bid": 0,
+                "status": "active",
+                "expires": 3600,
+            }
+            return self.commit(
+                sync_payload([item(1, 100, "tradepile", 500)], 10000, [listing]),
+                kind,
+            )
+
+        dispatcher = ActionDispatcher(self.bridge, self.runtime, list_sync)
+        with patch("fc27.actions.time.sleep"), self.assertRaisesRegex(
+            FC27Error, "has no listing after readback"
+        ):
+            dispatcher(
+                {
+                    "action_id": "list-wrong-price",
+                    "type": "list_item",
+                    "item_id": 1,
+                    "starting_bid": 650,
+                    "buy_now_price": 700,
+                    "duration": 3600,
+                }
+            )
+
+    def test_delayed_listing_reconciliation_requires_exact_prices(self):
+        with self.runtime.connect() as connection:
+            for suffix, starting_bid in (("exact", 650), ("wrong", 600)):
+                connection.execute(
+                    """INSERT INTO action_batches(
+                         batch_id, execution_mode, expected_sync_id, created_at, status
+                       ) VALUES (?, 'suggest', 1, '2026-09-18T10:00:00Z', 'failed')""",
+                    (f"batch-{suffix}",),
+                )
+                connection.execute(
+                    """INSERT INTO actions(
+                         action_id, batch_id, sequence_no, action_type,
+                         idempotency_key, item_id, params_json, status, error_code
+                       ) VALUES (?, ?, 0, 'list_item', ?, 1, ?, 'failed',
+                                 'LISTING_READBACK_FAILED')""",
+                    (
+                        f"list-{suffix}",
+                        f"batch-{suffix}",
+                        f"key-{suffix}",
+                        json.dumps(
+                            {
+                                "item_id": 1,
+                                "starting_bid": starting_bid,
+                                "buy_now_price": 700,
+                            }
+                        ),
+                    ),
+                )
+            connection.execute(
+                """INSERT INTO trade_listings(
+                     trade_id, item_id, starting_bid, buy_now_price, current_bid,
+                     status, last_seen_at
+                   ) VALUES (77, 1, 650, 700, 0, 'active',
+                             '2026-09-18T10:01:00Z')"""
+            )
+            connection.commit()
+
+        self.assertEqual(self.runtime.reconcile_listing_actions(), ["list-exact"])
+        with self.runtime.connect() as connection:
+            exact = connection.execute(
+                "SELECT status, result_json FROM actions WHERE action_id = 'list-exact'"
+            ).fetchone()
+            wrong = connection.execute(
+                "SELECT status FROM actions WHERE action_id = 'list-wrong'"
+            ).fetchone()
+        self.assertEqual(exact["status"], "complete")
+        self.assertTrue(json.loads(exact["result_json"])["reconciled"])
+        self.assertEqual(wrong["status"], "failed")
 
 
 if __name__ == "__main__":

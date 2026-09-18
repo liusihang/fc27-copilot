@@ -366,6 +366,37 @@
     return globalThis.services;
   }
 
+  async function findMarketItem(params) {
+    const appServices = requireWebAppServices();
+    const model = new globalThis.UTBucketedItemSearchViewModel();
+    const criteria = model.searchCriteria;
+    criteria.defId = [Number(params.definition_id)];
+    criteria.count = 21;
+    criteria.maxBuy = Number(params.price);
+    appServices.Item.clearTransferMarketCache?.();
+    const response = await observeOnce(appServices.Item.searchTransferMarket(criteria, 1));
+    const item = resultItems(response).find((entry) => {
+      const auction = entry?.getAuctionData?.() || entry?._auction || entry?.auctionData || {};
+      return String(readValue(auction, ['tradeId', 'id'])) === String(params.trade_id);
+    });
+    if (!item) {
+      throw Object.assign(new Error(`Trade ${params.trade_id} is no longer available at the requested price.`), { code: 'TRADE_NOT_FOUND' });
+    }
+    return { appServices, item };
+  }
+
+  async function loadItemById(itemId) {
+    const appServices = requireWebAppServices();
+    const response = await observeOnce(appServices.Item.requestItemsById([Number(itemId)]));
+    const item = resultItems(response).find(
+      (entry) => Number(readValue(entry, ['id', 'itemId'], ['getId'])) === Number(itemId)
+    );
+    if (!item) {
+      throw Object.assign(new Error(`Owned item ${itemId} was not found.`), { code: 'ITEM_NOT_FOUND' });
+    }
+    return { appServices, item };
+  }
+
   const methods = {
     async getSessionStatus() {
       return publicSession();
@@ -426,29 +457,46 @@
     },
 
     async buyNow(params) {
-      return eaRequest(`/trade/${encodeURIComponent(params.trade_id)}/bid`, {
-        method: 'PUT',
-        body: { bid: Number(params.buy_now_price) },
+      const loaded = await findMarketItem({
+        trade_id: params.trade_id,
+        definition_id: params.definition_id,
+        price: params.buy_now_price,
       });
+      const response = await observeOnce(
+        loaded.appServices.Item.bid(loaded.item, Number(params.buy_now_price))
+      );
+      return { status: response.status ?? null, trade_id: String(params.trade_id) };
     },
 
     async placeBid(params) {
-      return eaRequest(`/trade/${encodeURIComponent(params.trade_id)}/bid`, {
-        method: 'PUT',
-        body: { bid: Number(params.bid) },
+      const loaded = await findMarketItem({
+        trade_id: params.trade_id,
+        definition_id: params.definition_id,
+        price: params.bid,
       });
+      const response = await observeOnce(
+        loaded.appServices.Item.bid(loaded.item, Number(params.bid))
+      );
+      return { status: response.status ?? null, trade_id: String(params.trade_id) };
     },
 
     async listOnMarket(params) {
-      return eaRequest('/auctionhouse', {
-        method: 'POST',
-        body: {
-          itemData: { id: Number(params.item_id) },
-          startingBid: Number(params.starting_bid),
-          buyNowPrice: Number(params.buy_now_price),
-          duration: Number(params.duration ?? 3600),
-        },
-      });
+      const loaded = await loadItemById(params.item_id);
+      const response = await observeOnce(
+        loaded.appServices.Item.list(
+          loaded.item,
+          Number(params.starting_bid),
+          Number(params.buy_now_price),
+          Number(params.duration ?? 3600)
+        )
+      );
+      return {
+        status: response.status ?? null,
+        success: readValue(response, ['success'], ['getSuccess']),
+        error: plainValue(response.error ?? response.errors ?? null),
+        data: plainValue(response.data ?? response.response ?? null),
+        item_id: Number(params.item_id),
+      };
     },
 
     async getClubPage(params = {}) {
@@ -498,17 +546,19 @@
     },
 
     async sendToTradepile(params) {
-      return eaRequest('/item', {
-        method: 'PUT',
-        body: { itemData: [{ id: Number(params.item_id), pile: 'trade' }] },
-      });
+      const loaded = await loadItemById(params.item_id);
+      const response = await observeOnce(
+        loaded.appServices.Item.move([loaded.item], globalThis.ItemPile.TRANSFER, false)
+      );
+      return { status: response.status ?? null, item_id: Number(params.item_id) };
     },
 
     async sendToClub(params) {
-      return eaRequest('/item', {
-        method: 'PUT',
-        body: { itemData: [{ id: Number(params.item_id), pile: 'club' }] },
-      });
+      const loaded = await loadItemById(params.item_id);
+      const response = await observeOnce(
+        loaded.appServices.Item.move([loaded.item], globalThis.ItemPile.CLUB, false)
+      );
+      return { status: response.status ?? null, item_id: Number(params.item_id) };
     },
 
     async getTradepile() {
@@ -524,11 +574,15 @@
     },
 
     async relistAll() {
-      return eaRequest('/auctionhouse/relist', { method: 'PUT', body: {} });
+      const appServices = requireWebAppServices();
+      const response = await observeOnce(appServices.Item.relistExpiredAuctions());
+      return { status: response.status ?? null };
     },
 
     async clearSold() {
-      return eaRequest('/tradepile', { method: 'DELETE' });
+      const appServices = requireWebAppServices();
+      const response = await observeOnce(appServices.Item.clearSoldItems(false));
+      return { status: response.status ?? null };
     },
 
     async getSbcSets() {

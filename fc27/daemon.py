@@ -277,7 +277,12 @@ class FC27Daemon:
         except FC27Error as error:
             runtime.fail_sync(sync_id, error)
             raise
-        return {"account": runtime.account_summary(), **summary}
+        reconciled_actions = runtime.reconcile_listing_actions()
+        return {
+            "account": runtime.account_summary(),
+            "reconciled_actions": reconciled_actions,
+            **summary,
+        }
 
     def _browser_tool(self, method, params):
         response = self.bridge.call(method, params)

@@ -1,3 +1,5 @@
+import time
+
 from .errors import FC27Error
 
 
@@ -29,6 +31,7 @@ class ActionDispatcher:
             "buyNow",
             {
                 "trade_id": action["trade_id"],
+                "definition_id": action["expected_card_ea_id"],
                 "buy_now_price": action["max_price"],
             },
         )
@@ -75,7 +78,14 @@ class ActionDispatcher:
 
     def _place_bid(self, action):
         before_coins = self.runtime.account_summary()["coin_balance"]
-        self._call("placeBid", {"trade_id": action["trade_id"], "bid": action["bid"]})
+        self._call(
+            "placeBid",
+            {
+                "trade_id": action["trade_id"],
+                "definition_id": action["expected_card_ea_id"],
+                "bid": action["bid"],
+            },
+        )
         sync = self.sync_full("post_action")
         watchlist = self._call("getWatchlist", {})
         listing = next(
@@ -116,7 +126,7 @@ class ActionDispatcher:
         return {"item": item, "sync": sync}
 
     def _list_item(self, action):
-        self._call(
+        action_response = self._call(
             "listOnMarket",
             {
                 "item_id": action["item_id"],
@@ -125,13 +135,39 @@ class ActionDispatcher:
                 "duration": action["duration"],
             },
         )
+        observed_listing = None
+        for attempt in range(6):
+            tradepile = self._call("getTradepile", {})
+            observed_listing = next(
+                (
+                    row
+                    for row in tradepile.get("auctionInfo") or []
+                    if row.get("itemData", {}).get("item_id") == action["item_id"]
+                    and int(row.get("tradeId") or 0) > 0
+                    and int(row.get("startingBid") or 0) == action["starting_bid"]
+                    and int(row.get("buyNowPrice") or 0) == action["buy_now_price"]
+                ),
+                None,
+            )
+            if observed_listing is not None:
+                break
+            if attempt < 5:
+                time.sleep(2)
         sync = self.sync_full("post_action")
-        listing = self.runtime.listing_for_item(action["item_id"])
+        listing = self.runtime.listing_for_item(
+            action["item_id"],
+            starting_bid=action["starting_bid"],
+            buy_now_price=action["buy_now_price"],
+        )
         if listing is None:
             raise FC27Error(
                 "LISTING_READBACK_FAILED",
                 f"Item {action['item_id']} has no listing after readback.",
                 recovery="Do not repeat the listing until Tradepile is inspected.",
+                details={
+                    "action_response": action_response,
+                    "observed_listing": observed_listing,
+                },
             )
         return {"listing": listing, "sync": sync}
 

@@ -484,12 +484,24 @@ class RuntimeDB:
         result["protected"] = bool(result["protected"])
         return result
 
-    def listing_for_item(self, item_id):
+    def listing_for_item(self, item_id, *, starting_bid=None, buy_now_price=None):
+        clauses = [
+            "item_id = ?",
+            "trade_id > 0",
+            "LOWER(status) NOT IN ('expired', 'closed', 'sold', 'inactive')",
+        ]
+        values = [int(item_id)]
+        if starting_bid is not None:
+            clauses.append("starting_bid = ?")
+            values.append(int(starting_bid))
+        if buy_now_price is not None:
+            clauses.append("buy_now_price = ?")
+            values.append(int(buy_now_price))
         with self.connect() as connection:
             row = connection.execute(
-                """SELECT * FROM trade_listings WHERE item_id = ?
-                   ORDER BY last_seen_at DESC LIMIT 1""",
-                (int(item_id),),
+                f"""SELECT * FROM trade_listings WHERE {' AND '.join(clauses)}
+                    ORDER BY last_seen_at DESC LIMIT 1""",
+                values,
             ).fetchone()
         return dict(row) if row else None
 
@@ -524,6 +536,56 @@ class RuntimeDB:
                 ),
             )
             connection.commit()
+
+    def reconcile_listing_actions(self):
+        reconciled = []
+        with self.connect() as connection:
+            failed = connection.execute(
+                """SELECT action_id, batch_id, params_json FROM actions
+                   WHERE action_type = 'list_item' AND status = 'failed'
+                     AND error_code = 'LISTING_READBACK_FAILED'"""
+            ).fetchall()
+            for row in failed:
+                params = json.loads(row["params_json"])
+                listing = connection.execute(
+                    """SELECT * FROM trade_listings WHERE item_id = ? AND trade_id > 0
+                       AND starting_bid = ? AND buy_now_price = ?
+                       AND LOWER(status) NOT IN ('expired', 'closed', 'sold', 'inactive')
+                       ORDER BY last_seen_at DESC LIMIT 1""",
+                    (
+                        params["item_id"],
+                        params["starting_bid"],
+                        params["buy_now_price"],
+                    ),
+                ).fetchone()
+                if listing is None:
+                    continue
+                result = {
+                    "reconciled": True,
+                    "listing": dict(listing),
+                    "evidence_sync_id": self.account_summary()["last_full_sync_id"],
+                }
+                connection.execute(
+                    """UPDATE actions SET status = 'complete', error_code = NULL,
+                         error_message = NULL, result_json = ? WHERE action_id = ?""",
+                    (
+                        json.dumps(result, separators=(",", ":"), sort_keys=True),
+                        row["action_id"],
+                    ),
+                )
+                remaining = connection.execute(
+                    """SELECT COUNT(*) FROM actions
+                       WHERE batch_id = ? AND status != 'complete'""",
+                    (row["batch_id"],),
+                ).fetchone()[0]
+                if remaining == 0:
+                    connection.execute(
+                        "UPDATE action_batches SET status = 'complete' WHERE batch_id = ?",
+                        (row["batch_id"],),
+                    )
+                reconciled.append(row["action_id"])
+            connection.commit()
+        return reconciled
 
     def _validate_schema(self, connection):
         try:

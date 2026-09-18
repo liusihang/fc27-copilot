@@ -1,3 +1,4 @@
+import json
 import sqlite3
 import tempfile
 import unittest
@@ -61,7 +62,25 @@ class MCPTest(unittest.TestCase):
         web_root = root / "web"
         web_root.mkdir()
         (web_root / "index.html").write_text("bridge", encoding="utf-8")
-        self.daemon = FC27Daemon(catalog_path, web_root)
+        policy_path = root / "policy.json"
+        policy_path.write_text(
+            json.dumps(
+                {
+                    "execution_mode": "observe",
+                    "minimum_coin_reserve": 0,
+                    "maximum_single_purchase": 0,
+                    "maximum_batch_spend": 0,
+                    "maximum_daily_spend": 0,
+                    "maximum_batch_actions": 1,
+                    "maximum_same_card_owned": 1,
+                    "maximum_tradepile_usage": 0,
+                    "protected_item_ids": [],
+                    "allowed_action_types": [],
+                }
+            ),
+            encoding="utf-8",
+        )
+        self.daemon = FC27Daemon(catalog_path, web_root, policy_path=policy_path)
 
     def tearDown(self):
         self.directory.cleanup()
