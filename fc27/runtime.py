@@ -472,6 +472,59 @@ class RuntimeDB:
             connection.commit()
             return cursor.lastrowid
 
+    def current_item(self, item_id):
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM club_items WHERE item_id = ?", (int(item_id),)
+            ).fetchone()
+        if row is None:
+            return None
+        result = dict(row)
+        result["tradeable"] = bool(result["tradeable"])
+        result["protected"] = bool(result["protected"])
+        return result
+
+    def listing_for_item(self, item_id):
+        with self.connect() as connection:
+            row = connection.execute(
+                """SELECT * FROM trade_listings WHERE item_id = ?
+                   ORDER BY last_seen_at DESC LIMIT 1""",
+                (int(item_id),),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def record_coin_transaction(
+        self,
+        *,
+        transaction_id,
+        action_id,
+        item_id,
+        card_ea_id,
+        kind,
+        price,
+        tax,
+        coin_delta,
+    ):
+        with self.connect() as connection:
+            connection.execute(
+                """INSERT INTO coin_transactions(
+                     transaction_id, action_id, item_id, card_ea_id, kind,
+                     price, tax, coin_delta, observed_at
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    transaction_id,
+                    action_id,
+                    item_id,
+                    card_ea_id,
+                    kind,
+                    price,
+                    tax,
+                    coin_delta,
+                    utc_now(),
+                ),
+            )
+            connection.commit()
+
     def _validate_schema(self, connection):
         try:
             version = connection.execute(

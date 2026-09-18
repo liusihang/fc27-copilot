@@ -9,6 +9,7 @@ from pathlib import Path
 
 from .bridge import BrowserBridge
 from .account import AccountReader
+from .actions import ActionDispatcher
 from .catalog import CatalogDB
 from .errors import FC27Error
 from .execution import ExecutionService
@@ -155,28 +156,7 @@ class FC27Daemon:
                         f"Full synchronization requires: {', '.join(missing)}.",
                         recovery="Include coins, club, storage, unassigned, and tradepile.",
                     )
-                reader = AccountReader(self.bridge)
-                identity = reader.identity()
-                account = self.accounts.activate(identity)
-                runtime = self.accounts.active
-                sync_id = runtime.begin_sync("login_full")
-                results = {}
-                for area in requested:
-                    try:
-                        result = reader.read_area(area)
-                        results[area] = result
-                        runtime.record_sync_part(sync_id, result)
-                    except FC27Error as error:
-                        runtime.fail_sync(sync_id, error, area)
-                        raise
-                try:
-                    summary = runtime.commit_full_sync(sync_id, results, required)
-                except FC27Error as error:
-                    runtime.fail_sync(sync_id, error)
-                    raise
-                return self._envelope(
-                    "ea_webapp", {"account": runtime.account_summary(), **summary}
-                )
+                return self._envelope("ea_webapp", self._sync_full("login_full", requested))
             if name == "market_search":
                 if not self.accounts.active:
                     raise FC27Error(
@@ -253,8 +233,13 @@ class FC27Daemon:
                         retryable=True,
                         recovery="Run FC27:sync_club after login, then retry the exact batch.",
                     )
+                dispatcher = ActionDispatcher(
+                    self.bridge, self.accounts.active, self._sync_full
+                )
                 with self._execution_lock:
-                    data = ExecutionService(self.accounts.active, self.policy).execute(arguments)
+                    data = ExecutionService(
+                        self.accounts.active, self.policy, dispatcher=dispatcher
+                    ).execute(arguments)
                 return self._envelope("execution", data)
             raise FC27Error("TOOL_NOT_FOUND", f"Unknown FC27 tool: {name}")
         except FC27Error as error:
@@ -269,6 +254,30 @@ class FC27Daemon:
                     details={"exception": type(error).__name__, "message": str(error)},
                 )
             )
+
+    def _sync_full(self, kind="login_full", requested=None):
+        required = ("coins", "club", "storage", "unassigned", "tradepile")
+        requested = tuple(requested or required)
+        reader = AccountReader(self.bridge)
+        identity = reader.identity()
+        self.accounts.activate(identity)
+        runtime = self.accounts.active
+        sync_id = runtime.begin_sync(kind)
+        results = {}
+        for area in requested:
+            try:
+                result = reader.read_area(area)
+                results[area] = result
+                runtime.record_sync_part(sync_id, result)
+            except FC27Error as error:
+                runtime.fail_sync(sync_id, error, area)
+                raise
+        try:
+            summary = runtime.commit_full_sync(sync_id, results, required)
+        except FC27Error as error:
+            runtime.fail_sync(sync_id, error)
+            raise
+        return {"account": runtime.account_summary(), **summary}
 
     def _browser_tool(self, method, params):
         response = self.bridge.call(method, params)

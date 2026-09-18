@@ -170,6 +170,35 @@ class ExecutionServiceTest(unittest.TestCase):
             service.execute(second)
         self.assertEqual(context.exception.code, "IDEMPOTENCY_CONFLICT")
 
+    def test_list_item_requires_an_ordered_positive_price_band(self):
+        action = {
+            "action_id": "list-1",
+            "idempotency_key": "list-1",
+            "type": "list_item",
+            "item_id": 10,
+            "starting_bid": 800,
+            "buy_now_price": 700,
+        }
+        service = self.service(
+            policy(allowed_action_types=["list_item"]), lambda value: {"ok": True}
+        )
+        with self.assertRaises(FC27Error) as context:
+            service.execute(self.request(actions=[action]))
+        self.assertEqual(context.exception.code, "INVALID_ACTION")
+
+    def test_item_actions_require_a_current_tradeable_item(self):
+        missing = {
+            "action_id": "move-missing",
+            "idempotency_key": "move-missing",
+            "type": "move_item",
+            "item_id": 999,
+            "destination": "tradepile",
+        }
+        service = self.service(policy(), lambda value: {"ok": True})
+        with self.assertRaises(FC27Error) as context:
+            service.execute(self.request(actions=[missing]))
+        self.assertEqual(context.exception.code, "ITEM_NOT_FOUND")
+
 
 if __name__ == "__main__":
     unittest.main()

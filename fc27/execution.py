@@ -154,6 +154,10 @@ class ExecutionService:
                     "SELECT item_id FROM club_items WHERE protected = 1"
                 )
             }
+            item_rows = {
+                int(row["item_id"]): dict(row)
+                for row in connection.execute("SELECT * FROM club_items")
+            }
             holding_counts = {
                 int(row["card_ea_id"]): int(row["item_count"])
                 for row in connection.execute(
@@ -178,8 +182,18 @@ class ExecutionService:
             if action["type"] not in policy["allowed_action_types"]:
                 self._policy_denied(f"Action type {action['type']} is not allowed by policy.")
             item_id = action.get("item_id")
+            item = item_rows.get(item_id) if item_id is not None else None
+            if action["type"] in ITEM_TYPES and item is None:
+                raise FC27Error(
+                    "ITEM_NOT_FOUND",
+                    f"Owned item {item_id} is absent from the latest complete state.",
+                    retryable=True,
+                    recovery="Run FC27:sync_club and choose an item from the new state.",
+                )
             if item_id is not None and item_id in protected:
                 self._policy_denied(f"Item {item_id} is protected.")
+            if action["type"] == "list_item" and not item["tradeable"]:
+                self._policy_denied(f"Item {item_id} is untradeable and cannot be listed.")
             if action["type"] in PURCHASE_TYPES:
                 amount = action["max_price"] if action["type"] == "buy_now" else action["bid"]
                 if amount > policy["maximum_single_purchase"]:
@@ -189,8 +203,17 @@ class ExecutionService:
                 batch_spend += amount
                 card_ea_id = action["expected_card_ea_id"]
                 planned_card_counts[card_ea_id] = planned_card_counts.get(card_ea_id, 0) + 1
-            if action["type"] == "list_item" or (
-                action["type"] == "move_item" and action.get("destination") == "tradepile"
+            if action["type"] == "move_item" and item["location"] == action["destination"]:
+                raise FC27Error(
+                    "INVALID_ACTION",
+                    f"Item {item_id} is already in {action['destination']}.",
+                )
+            if (
+                action["type"] == "list_item" and item["location"] != "tradepile"
+            ) or (
+                action["type"] == "move_item"
+                and action.get("destination") == "tradepile"
+                and item["location"] != "tradepile"
             ):
                 planned_tradepile_additions += 1
         if batch_spend > policy["maximum_batch_spend"]:
@@ -260,6 +283,33 @@ class ExecutionService:
                 raise FC27Error("INVALID_ACTION", f"{price_key} must be positive.")
         if action_type in ITEM_TYPES and normalized.get("item_id") is None:
             raise FC27Error("INVALID_ACTION", f"{action_type} requires item_id.")
+        if action_type == "move_item":
+            if normalized.get("destination") not in ("club", "tradepile"):
+                raise FC27Error(
+                    "INVALID_ACTION", "move_item destination must be club or tradepile."
+                )
+        if action_type == "list_item":
+            missing = [
+                key
+                for key in ("starting_bid", "buy_now_price")
+                if normalized.get(key) is None
+            ]
+            if missing:
+                raise FC27Error(
+                    "INVALID_ACTION",
+                    f"list_item is missing required fields: {', '.join(missing)}.",
+                )
+            for key in ("starting_bid", "buy_now_price"):
+                normalized[key] = int(normalized[key])
+                if normalized[key] <= 0:
+                    raise FC27Error("INVALID_ACTION", f"{key} must be positive.")
+            if normalized["starting_bid"] > normalized["buy_now_price"]:
+                raise FC27Error(
+                    "INVALID_ACTION", "starting_bid cannot exceed buy_now_price."
+                )
+            normalized["duration"] = int(normalized.get("duration", 3600))
+            if normalized["duration"] < 3600:
+                raise FC27Error("INVALID_ACTION", "duration must be at least 3600 seconds.")
         return normalized
 
     def _insert_audit(self, request, actions, execution_mode):
