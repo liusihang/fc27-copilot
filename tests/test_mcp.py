@@ -103,7 +103,7 @@ class MCPTest(unittest.TestCase):
         self.assertTrue(result["data"]["ea_session"]["authenticated"])
         self.assertTrue(result["data"]["ea_session"]["sidCaptured"])
         self.assertNotIn("sid", result["data"]["ea_session"])
-        self.assertEqual(result["data"]["policy"]["mode"], "observe")
+        self.assertEqual(result["data"]["policy"]["execution_mode"], "observe")
         self.assertFalse(result["data"]["policy"]["account_writes_enabled"])
 
 

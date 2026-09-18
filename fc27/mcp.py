@@ -11,6 +11,29 @@ def object_schema(properties, required=()):
     return schema
 
 
+ACTION_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "action_id": {"type": "string", "minLength": 1, "maxLength": 128},
+        "idempotency_key": {"type": "string", "minLength": 1, "maxLength": 256},
+        "type": {"type": "string", "enum": ["buy_now", "place_bid", "list_item", "move_item", "relist_all", "clear_sold", "save_sbc_squad", "submit_sbc"]},
+        "item_id": {"type": "integer"},
+        "trade_id": {"type": "integer"},
+        "expected_card_ea_id": {"type": "integer"},
+        "max_price": {"type": "integer", "minimum": 1},
+        "bid": {"type": "integer", "minimum": 1},
+        "starting_bid": {"type": "integer", "minimum": 1},
+        "buy_now_price": {"type": "integer", "minimum": 1},
+        "duration": {"type": "integer", "minimum": 3600},
+        "destination": {"type": "string", "enum": ["club", "tradepile"]},
+        "challenge_id": {"type": ["integer", "string"]},
+        "solution_id": {"type": "string"},
+    },
+    "required": ["action_id", "idempotency_key", "type"],
+    "additionalProperties": True,
+}
+
+
 TOOLS = [
     {
         "name": "status",
@@ -74,8 +97,8 @@ TOOLS = [
     },
     {
         "name": "execute_actions",
-        "description": "Execute an exact ordered action list after policy, stale-state, target, and idempotency validation. The daemon never selects targets or prices. Current observe mode rejects every action.",
-        "inputSchema": object_schema({"batch_id": {"type": "string"}, "expected_sync_id": {"type": "integer"}, "stop_on_error": {"type": "boolean", "default": True}, "confirmed": {"type": "boolean", "default": False}, "actions": {"type": "array", "items": {"type": "object"}, "minItems": 1}}, ["batch_id", "expected_sync_id", "actions"]),
+        "description": "Execute one exact ordered action batch after immutable policy, current-sync, protected-item, spend, capacity, ownership, and idempotency checks. Use only after the Agent has selected concrete item/trade IDs and prices. buy_now requires trade_id, expected_card_ea_id, and max_price; place_bid requires trade_id, expected_card_ea_id, and bid; item actions require item_id. Suggest mode also requires confirmed=true. Replaying the same batch_id and actions returns the recorded audit result. Observe mode rejects before contacting EA.",
+        "inputSchema": object_schema({"batch_id": {"type": "string", "minLength": 1, "maxLength": 128}, "expected_sync_id": {"type": "integer"}, "stop_on_error": {"type": "boolean", "default": True}, "confirmed": {"type": "boolean", "default": False}, "actions": {"type": "array", "items": ACTION_SCHEMA, "minItems": 1}}, ["batch_id", "expected_sync_id", "actions"]),
         "annotations": {"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": True},
     },
     {

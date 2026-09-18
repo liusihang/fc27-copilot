@@ -11,8 +11,10 @@ from .bridge import BrowserBridge
 from .account import AccountReader
 from .catalog import CatalogDB
 from .errors import FC27Error
+from .execution import ExecutionService
 from .mcp import MCPServer
 from .market import MarketService
+from .policy import PolicyStore
 from .runtime import RuntimeManager
 
 
@@ -24,15 +26,25 @@ def utc_now():
 
 
 class FC27Daemon:
-    def __init__(self, catalog_path, web_root, bridge=None, accounts_root=None):
+    def __init__(
+        self,
+        catalog_path,
+        web_root,
+        bridge=None,
+        accounts_root=None,
+        policy_path=None,
+    ):
         self.catalog = CatalogDB(catalog_path)
         self.web_root = Path(web_root)
         self.bridge = bridge or BrowserBridge()
         self.accounts = RuntimeManager(
             accounts_root or Path(catalog_path).resolve().parent / "accounts"
         )
+        project_root = Path(__file__).resolve().parents[1]
+        self.policy = PolicyStore(policy_path or project_root / "policy.json")
         self.mcp = MCPServer(self)
         self._catalog_refresh_lock = threading.Lock()
+        self._execution_lock = threading.Lock()
 
     def health(self):
         catalog_validation = self.catalog.validate()
@@ -71,9 +83,10 @@ class FC27Daemon:
         try:
             if name == "status":
                 data = self.health()
+                policy = self.policy.load()
                 data["policy"] = {
-                    "mode": "observe",
-                    "account_writes_enabled": False,
+                    **policy,
+                    "account_writes_enabled": policy["execution_mode"] != "observe",
                 }
                 if data["browser_bridge"]["connected"]:
                     try:
@@ -227,11 +240,22 @@ class FC27Daemon:
                     recovery="Complete read-only SBC capture before requesting solutions.",
                 )
             if name == "execute_actions":
-                raise FC27Error(
-                    "EXECUTION_DISABLED",
-                    "Account actions are disabled while policy mode is observe.",
-                    recovery="Complete read-only acceptance before separately enabling suggest mode.",
-                )
+                if not self.accounts.active:
+                    if self.policy.load()["execution_mode"] == "observe":
+                        raise FC27Error(
+                            "EXECUTION_DISABLED",
+                            "Account actions are disabled while policy mode is observe.",
+                            recovery="Review policy values and explicitly change execution_mode before retrying.",
+                        )
+                    raise FC27Error(
+                        "ACCOUNT_NOT_INITIALIZED",
+                        "No EA Persona runtime database has been selected yet.",
+                        retryable=True,
+                        recovery="Run FC27:sync_club after login, then retry the exact batch.",
+                    )
+                with self._execution_lock:
+                    data = ExecutionService(self.accounts.active, self.policy).execute(arguments)
+                return self._envelope("execution", data)
             raise FC27Error("TOOL_NOT_FOUND", f"Unknown FC27 tool: {name}")
         except FC27Error as error:
             return self._error_envelope(error)
