@@ -50,6 +50,11 @@ if (!worker.includes('FC27_DAEMON_CALL')) errors.push('daemon bridge message han
 if (!worker.includes('http://127.0.0.1:3926')) errors.push('loopback daemon origin check missing');
 if (worker.includes('writeToolsEnabled')) errors.push('extension still contains account policy state');
 
+const pageInject = await fs.readFile(path.join(extension, 'content', 'page-inject.js'), 'utf8');
+if (!pageInject.includes('const savedIds = savedSbcItemIds(squad);')) {
+  errors.push('SBC submit must reuse the positive-item saved squad filter');
+}
+
 for (const file of files.filter((f) => f.endsWith('.js') && !f.endsWith('content/page-inject.js'))) {
   const text = await fs.readFile(file, 'utf8');
   if (text.includes('X-UT-SID') || text.includes('X-UT-PHISHING-TOKEN')) {

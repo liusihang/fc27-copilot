@@ -910,10 +910,7 @@
         throw Object.assign(new Error(`SBC challenge ${params.challenge_id} has no saved squad.`), { code: 'SBC_SQUAD_UNAVAILABLE' });
       }
       loaded.challenge.squad = squad;
-      const savedIds = (typeof squad.getPlayers === 'function' ? squad.getPlayers() : [])
-        .map((entry) => typeof entry?.getItem === 'function' ? entry.getItem() : entry?.item)
-        .filter(Boolean)
-        .map((item) => Number(readValue(item, ['id', 'itemId'], ['getId'])));
+      const savedIds = savedSbcItemIds(squad);
       const expectedIds = (params.item_ids || []).map(Number);
       if (savedIds.length !== expectedIds.length || savedIds.some((itemId, index) => itemId !== expectedIds[index])) {
         throw Object.assign(new Error('The saved SBC squad does not match the confirmed item order.'), {

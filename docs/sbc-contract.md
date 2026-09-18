@@ -75,7 +75,7 @@ After an acknowledged submit, a complete synchronization must advance beyond the
 
 ### Repeatable outcome classification
 
-For repeatable SBCs, status reset and `completed=false` are expected after submission and do not prove failure. Every completion counter present on either side of the checkpoint must have a valid before/after pair, and all available deltas must agree:
+For repeatable SBCs, status reset and `completed=false` are expected after submission and do not prove failure. Every lifetime `timesCompleted` counter present on either side of the checkpoint must have a valid before/after pair, and all available deltas must agree. `challengesCompletedCount` describes progress in the current repeatable cycle and may reset or remain zero after a successful completion, so it is recorded but does not classify the submission outcome:
 
 | Outcome | Completion counter | Inventory evidence | Saved squad evidence |
 | --- | --- | --- | --- |

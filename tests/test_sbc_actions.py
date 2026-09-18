@@ -881,6 +881,19 @@ class SbcActionTest(unittest.TestCase):
         self.assertFalse(progress["counter_consistent"])
         self.assertIsNone(progress["counter_delta"])
 
+    def test_repeatable_cycle_progress_reset_does_not_conflict_with_completion(self):
+        item_ids = self.solution["item_ids"]
+        pre_submit = browser_challenge(item_ids)
+        post_submit = submission_state(1)
+        post_submit["set"]["completed_count"] = 0
+        progress = self.runtime._classify_sbc_submit_outcome(
+            pre_submit, post_submit, item_ids, []
+        )
+        self.assertEqual(progress["outcome"], "success")
+        self.assertTrue(progress["counter_consistent"])
+        self.assertEqual(progress["counter_delta"], 1)
+        self.assertEqual(progress["cycle_progress"], {"before": 0, "after": 0})
+
     def test_repeatable_one_sided_counter_stays_unknown(self):
         item_ids = self.solution["item_ids"]
         post_submit = submission_state(1)

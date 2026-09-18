@@ -1184,11 +1184,6 @@ class RuntimeDB:
                 pre_set.get("times_completed"),
                 post_set.get("times_completed"),
             ),
-            (
-                "set.completed_count",
-                pre_set.get("completed_count"),
-                post_set.get("completed_count"),
-            ),
         ):
             before_value = cls._sbc_counter(before)
             after_value = cls._sbc_counter(after)
@@ -1214,6 +1209,10 @@ class RuntimeDB:
         after_counter = (
             counters[counter_source]["after"] if counter_source is not None else None
         )
+        cycle_progress = {
+            "before": cls._sbc_counter(pre_set.get("completed_count")),
+            "after": cls._sbc_counter(post_set.get("completed_count")),
+        }
         repeatable = bool(
             pre_challenge.get("repeatable") or pre_set.get("repeatable")
         )
@@ -1250,6 +1249,7 @@ class RuntimeDB:
             "before_counter": before_counter,
             "after_counter": after_counter,
             "counter_delta": counter_delta,
+            "cycle_progress": cycle_progress,
             "present_item_ids": present_item_ids,
             "missing_item_ids": sorted(set(expected_item_ids) - set(present_item_ids)),
             "trusted_saved_squad": trusted_saved_squad,
