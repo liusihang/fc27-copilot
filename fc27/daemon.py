@@ -104,10 +104,53 @@ class FC27Daemon:
                     },
                 )
                 return self.accounts.active.verify_sbc_saved_action(action_id, response)
+        if method == "reconcile_sbc_submit":
+            if not self.accounts.active:
+                raise FC27Error(
+                    "ACCOUNT_NOT_INITIALIZED",
+                    "No EA Persona runtime database has been selected yet.",
+                )
+            action_id = params.get("action_id")
+            if not action_id:
+                raise FC27Error(
+                    "INVALID_REQUEST", "reconcile_sbc_submit requires params.action_id"
+                )
+            with self._execution_lock:
+                target = self.accounts.active.sbc_submit_reconciliation_target(
+                    action_id
+                )
+                if target.get("resolved"):
+                    return target["result"]
+                sync = self._sync_full("sbc_submit_reconcile")
+                post_submit = self._browser_tool(
+                    "readSbcSubmissionState",
+                    {
+                        "set_id": target["set_id"],
+                        "challenge_id": target["challenge_id"],
+                    },
+                )
+                self._sbc_service().capture_challenge(post_submit)
+                saved_squad = None
+                if len(self.accounts.active.items_by_ids(target["item_ids"])) == len(
+                    target["item_ids"]
+                ):
+                    try:
+                        saved_squad = self._browser_tool(
+                            "readSavedSbcSquad",
+                            {
+                                "set_id": target["set_id"],
+                                "challenge_id": target["challenge_id"],
+                            },
+                        )
+                    except FC27Error:
+                        saved_squad = None
+                return self.accounts.active.reconcile_sbc_submit_action(
+                    action_id, sync, post_submit, saved_squad
+                )
         raise FC27Error(
             "METHOD_NOT_FOUND",
             f"Unknown daemon RPC method: {method}",
-            recovery="Use status, catalog_query, reconcile_sbc_save, or verify_sbc_save.",
+            recovery="Use status, catalog_query, reconcile_sbc_save, verify_sbc_save, or reconcile_sbc_submit.",
         )
 
     def call_tool(self, name, arguments):

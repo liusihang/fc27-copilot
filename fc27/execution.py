@@ -124,6 +124,17 @@ class ExecutionService:
             raise FC27Error(
                 "IDEMPOTENCY_CONFLICT", "idempotency_key values must be unique in a batch."
             )
+        submit_solution_ids = [
+            action["solution_id"]
+            for action in actions
+            if action["type"] == "submit_sbc"
+        ]
+        if len(submit_solution_ids) != len(set(submit_solution_ids)):
+            raise FC27Error(
+                "SBC_SUBMIT_ALREADY_ATTEMPTED",
+                "A batch cannot contain multiple submit actions for the same SBC solution.",
+                recovery="Submit one exact solution in one separately confirmed batch.",
+            )
         with self.runtime.connect() as connection:
             existing_action_ids = {
                 row["action_id"]: row["batch_id"]
@@ -208,6 +219,8 @@ class ExecutionService:
                     raise FC27Error("INVALID_ACTION", "SBC solution and challenge_id do not match.")
                 if solution["item_ids"] != action["item_ids"]:
                     raise FC27Error("INVALID_ACTION", "SBC action item_ids must exactly match the persisted solution order.")
+                if action["type"] == "submit_sbc":
+                    self.runtime.require_new_sbc_submit_attempt(action["solution_id"])
                 missing = [value for value in action["item_ids"] if value not in item_rows]
                 if missing:
                     raise FC27Error(

@@ -59,7 +59,10 @@ Any rejection before step 8 leaves the audit tables unchanged and never contacts
 - Item move requires the requested destination in the complete synchronized state.
 - Item listing polls the Tradepile for up to ten seconds, then requires an active trade ID with the exact requested starting bid and Buy Now price in the runtime database.
 - A listing that appears after the immediate readback window is reconciled only when a later complete synchronization proves the same item and exact prices. The original action and batch are then marked complete with the evidence sync ID.
+- SBC submit persists a fresh exact-squad checkpoint before contacting EA. Submit timeouts and incomplete post-submit reads never authorize a retry. The original action is reconciled through a newer complete sync, all-item presence/absence, removal history, and fresh challenge completion counters.
 - Failed readback never authorizes an automatic retry. The caller must inspect current state or replay the original batch ID.
+
+For the same SBC solution, pending, running, complete, outcome-unknown, readback-pending, and still-unknown submit actions block every new batch before EA contact. A reconciliation result of `SBC_SUBMIT_CONFIRMED_NOT_APPLIED` is the only failed submit state that permits a new separately confirmed attempt.
 
 ## Replay behavior
 

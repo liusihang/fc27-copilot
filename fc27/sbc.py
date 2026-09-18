@@ -273,14 +273,15 @@ class SbcService:
             "expires_at": str(value.get("expires")) if value.get("expires") is not None else None,
             "repeatable": bool(value.get("repeatable")),
             "challenge_count": value.get("challenge_count") or raw.get("challengesCount"),
-            "completed_count": raw.get("challengesCompletedCount"),
-            "times_completed": raw.get("timesCompleted"),
+            "completed_count": value.get("completed_count", raw.get("challengesCompletedCount")),
+            "times_completed": value.get("times_completed", raw.get("timesCompleted")),
             "rewards": value.get("rewards") or raw.get("awards") or [],
             "observed_at": observed_at,
             "raw": raw,
         }
 
     def _normalize_challenge(self, value, set_id, observed_at):
+        raw = value.get("raw") or value
         constraints, unsupported = self._normalize_requirements(value.get("requirements") or [])
         formation = value.get("formation")
         slots = list(FORMATION_SLOTS.get(formation, ()))
@@ -294,13 +295,14 @@ class SbcService:
             "expires_at": str(value.get("expires")) if value.get("expires") is not None else None,
             "repeatable": bool(value.get("repeatable")),
             "completed": bool(value.get("completed")),
+            "times_completed": value.get("times_completed", raw.get("timesCompleted")),
             "formation": formation,
             "slots": slots,
             "rewards": value.get("rewards") or [],
             "constraints": constraints,
             "unsupported_constraints": unsupported,
             "observed_at": observed_at,
-            "raw": value.get("raw") or value,
+            "raw": raw,
         }
 
     @staticmethod

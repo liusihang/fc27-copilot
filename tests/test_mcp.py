@@ -50,7 +50,12 @@ class ReconciliationBridge:
 
     def call(self, method, params):
         self.calls.append((method, params))
-        return {"ok": True, "data": self.response}
+        value = (
+            self.response[method]
+            if isinstance(self.response, dict) and method in self.response
+            else self.response
+        )
+        return {"ok": True, "data": value}
 
 
 class MCPTest(unittest.TestCase):
@@ -225,6 +230,81 @@ class MCPTest(unittest.TestCase):
             [("readSavedSbcSquad", {"set_id": "4", "challenge_id": "16"})],
         )
         self.assertEqual(observed, {"action_id": "save-1", "response": trusted})
+
+    def test_sbc_submit_reconciliation_sources_sync_and_evidence_internally(self):
+        self.daemon.accounts.activate(
+            {"persona_id": "persona-123", "platform": "ps5", "club_name": "Fixture Club"}
+        )
+        runtime = self.daemon.accounts.active
+        runtime.sbc_submit_reconciliation_target = lambda action_id: {
+            "action_id": action_id,
+            "resolved": False,
+            "set_id": "4",
+            "challenge_id": "16",
+            "solution_id": "solution-1",
+            "item_ids": list(range(1, 12)),
+            "expected_sync_id": 1,
+        }
+        runtime.items_by_ids = lambda item_ids: []
+        observed = {}
+
+        def reconcile(action_id, sync, post_submit, saved_squad):
+            observed.update(
+                {
+                    "action_id": action_id,
+                    "sync": sync,
+                    "post_submit": post_submit,
+                    "saved_squad": saved_squad,
+                }
+            )
+            return {"reconciled": True}
+
+        runtime.reconcile_sbc_submit_action = reconcile
+        sync = {"sync_id": 2, "complete": True}
+        self.daemon._sync_full = lambda kind: sync
+        captured = []
+
+        class CaptureService:
+            def capture_challenge(self, value):
+                captured.append(value)
+                return value
+
+        self.daemon._sbc_service = lambda: CaptureService()
+        post_submit = {
+            "source": "ea_webapp_fresh",
+            "freshness": {"sets_requested": True, "challenges_requested": True},
+            "set": {"id": 4},
+            "challenge": {"id": 16},
+        }
+        bridge = ReconciliationBridge(
+            {"readSbcSubmissionState": post_submit}
+        )
+        self.daemon.bridge = bridge
+        result = self.daemon.rpc(
+            {
+                "method": "reconcile_sbc_submit",
+                "params": {
+                    "action_id": "submit-1",
+                    "response": {"source": "forged"},
+                    "item_ids": [999],
+                },
+            }
+        )
+        self.assertEqual(result, {"reconciled": True})
+        self.assertEqual(
+            bridge.calls,
+            [("readSbcSubmissionState", {"set_id": "4", "challenge_id": "16"})],
+        )
+        self.assertEqual(captured, [post_submit])
+        self.assertEqual(
+            observed,
+            {
+                "action_id": "submit-1",
+                "sync": sync,
+                "post_submit": post_submit,
+                "saved_squad": None,
+            },
+        )
 
 
 if __name__ == "__main__":

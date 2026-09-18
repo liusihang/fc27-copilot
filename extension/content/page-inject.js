@@ -285,6 +285,8 @@
       expires: readValue(set, ['expires', 'endTime']),
       repeatable: Boolean(readValue(set, ['repeatable', 'isRepeatable'])),
       completed: Boolean(readValue(set, ['completed'], ['isComplete'])),
+      completed_count: readValue(set, ['challengesCompletedCount', 'completedCount']),
+      times_completed: readValue(set, ['timesCompleted']),
       rewards: plainValue(readValue(set, ['rewards', 'awards']), 0, new WeakSet(), 8),
       challenge_count: readValue(set, ['challengesCount']) ?? (Array.isArray(set?.challenges) ? set.challenges.length : null),
       raw: plainValue(set, 0, new WeakSet(), 8),
@@ -316,6 +318,7 @@
       expires: readValue(challenge, ['expires', 'endTime']),
       repeatable: Boolean(readValue(challenge, ['repeatable', 'isRepeatable'])),
       completed: typeof challenge?.isCompleted === 'function' ? Boolean(challenge.isCompleted()) : Boolean(challenge?.completed),
+      times_completed: readValue(challenge, ['timesCompleted']),
       formation: plainValue(readValue(challenge, ['formation', 'formationData']), 0, new WeakSet(), 8),
       slots: plainValue(readValue(challenge, ['slots', 'squadSlots', 'positions']), 0, new WeakSet(), 8),
       rewards: plainValue(readValue(challenge, ['rewards', 'awards']), 0, new WeakSet(), 8),
@@ -447,6 +450,11 @@
       set: {
         id: readValue(set, ['id', 'setId']),
         name: readValue(set, ['name', 'displayName']),
+        repeatable: Boolean(readValue(set, ['repeatable', 'isRepeatable'])),
+        completed: Boolean(readValue(set, ['completed'], ['isComplete'])),
+        completed_count: readValue(set, ['challengesCompletedCount', 'completedCount']),
+        times_completed: readValue(set, ['timesCompleted']),
+        rewards: plainValue(readValue(set, ['rewards', 'awards']), 0, new WeakSet(), 8),
       },
       challenge: {
         id: readValue(challenge, ['id', 'challengeId']),
@@ -456,6 +464,9 @@
         completed: typeof challenge?.isCompleted === 'function'
           ? Boolean(challenge.isCompleted())
           : Boolean(challenge?.completed),
+        repeatable: Boolean(readValue(challenge, ['repeatable', 'isRepeatable'])),
+        times_completed: readValue(challenge, ['timesCompleted']),
+        rewards: plainValue(readValue(challenge, ['rewards', 'awards']), 0, new WeakSet(), 8),
       },
       squad: sbcSquadReadback(squad, eligibility),
       saved_item_ids: savedSbcItemIds(squad),
@@ -872,6 +883,20 @@
       };
     },
 
+    async readSbcSubmissionState(params) {
+      const loaded = await findSbcChallenge(params.set_id, params.challenge_id);
+      return {
+        set: plainSbcSet(loaded.set),
+        challenge: plainSbcChallenge(loaded.challenge),
+        source: 'ea_webapp_fresh',
+        freshness: {
+          sets_requested: true,
+          challenges_requested: true,
+        },
+        status: loaded.status,
+      };
+    },
+
     async submitSbc(params) {
       const loaded = await findSbcChallenge(params.set_id, params.challenge_id);
       const refreshed = await observeOnce(
@@ -894,6 +919,37 @@
         throw Object.assign(new Error('The saved SBC squad does not match the confirmed item order.'), {
           code: 'SBC_SAVED_SQUAD_MISMATCH',
           payload: { saved_item_ids: savedIds, expected_item_ids: expectedIds },
+        });
+      }
+      const eligibility = currentSbcSubmissionEvidence(
+        params.set_id,
+        params.challenge_id,
+        loaded.challenge
+      );
+      if (eligibility.eligible !== true) {
+        throw Object.assign(new Error('The saved SBC squad is no longer eligible for submission.'), {
+          code: 'SBC_NOT_ELIGIBLE',
+          payload: { eligibility_evidence: eligibility },
+        });
+      }
+      const currentCounters = {
+        challenge_times_completed: readValue(loaded.challenge, ['timesCompleted']),
+        set_times_completed: readValue(loaded.set, ['timesCompleted']),
+        set_completed_count: readValue(loaded.set, ['challengesCompletedCount', 'completedCount']),
+      };
+      const expectedCounters = params.expected_counters || {};
+      const changedCounter = Object.entries(expectedCounters).find(
+        ([key, expected]) => expected != null
+          && (currentCounters[key] == null || Number(currentCounters[key]) !== Number(expected))
+      );
+      if (changedCounter) {
+        throw Object.assign(new Error('The SBC completion counter changed after pre-submit validation.'), {
+          code: 'SBC_SUBMIT_BASELINE_MISMATCH',
+          payload: {
+            counter: changedCounter[0],
+            expected: changedCounter[1],
+            actual: currentCounters[changedCounter[0]],
+          },
         });
       }
       const chemistryEnabled = Boolean(loaded.appServices.Chemistry?.isFeatureEnabled?.());

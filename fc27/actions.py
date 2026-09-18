@@ -4,7 +4,7 @@ from .errors import FC27Error
 from .sbc import SbcService
 
 
-SBC_SAVE_TIMEOUT_CODES = {
+SBC_TIMEOUT_CODES = {
     "BRIDGE_TIMEOUT",
     "PAGE_BRIDGE_TIMEOUT",
     "EA_SERVICE_TIMEOUT",
@@ -204,7 +204,7 @@ class ActionDispatcher:
                 },
             )
         except FC27Error as error:
-            if error.code not in SBC_SAVE_TIMEOUT_CODES:
+            if error.code not in SBC_TIMEOUT_CODES:
                 raise
             raise FC27Error(
                 "SBC_SAVE_OUTCOME_UNKNOWN",
@@ -269,38 +269,108 @@ class ActionDispatcher:
 
     def _submit_sbc(self, action):
         service = self._sbc_service()
+        expected_sync_id = action["_expected_sync_id"]
         validation = service.validate_solution(
-            action["solution_id"], action["_expected_sync_id"]
+            action["solution_id"], expected_sync_id
         )
-        response = self._call(
-            "submitSbc",
-            {
-                "set_id": action["set_id"],
-                "challenge_id": action["challenge_id"],
-                "item_ids": action["item_ids"],
-            },
-        )
-        sync = self.sync_full("post_sbc_submit")
-        remaining = {row["item_id"] for row in self.runtime.items_by_ids(action["item_ids"])}
-        if remaining:
-            raise FC27Error(
-                "SBC_SUBMIT_READBACK_FAILED",
-                "EA reported SBC submission but one or more confirmed items remain in inventory.",
-                recovery="Do not resubmit. Inspect the challenge and inventory state.",
-                details={"remaining_item_ids": sorted(remaining)},
-            )
-        challenge_response = self._call(
-            "getSbcChallenge",
+        pre_submit = self._call(
+            "readSavedSbcSquad",
             {"set_id": action["set_id"], "challenge_id": action["challenge_id"]},
         )
-        captured = service.capture_challenge(challenge_response)
-        evidence = {
-            "submitted_item_ids": action["item_ids"],
-            "ea": response,
-            "sync": sync,
-            "challenge": captured,
-        }
-        self.runtime.update_sbc_solution_status(action["solution_id"], "submitted", evidence)
+        self.runtime.record_sbc_submit_checkpoint(
+            action["action_id"], expected_sync_id, pre_submit
+        )
+        try:
+            response = self._call(
+                "submitSbc",
+                {
+                    "set_id": action["set_id"],
+                    "challenge_id": action["challenge_id"],
+                    "item_ids": action["item_ids"],
+                    "expected_counters": {
+                        "challenge_times_completed": (
+                            pre_submit.get("challenge") or {}
+                        ).get("times_completed"),
+                        "set_times_completed": (
+                            pre_submit.get("set") or {}
+                        ).get("times_completed"),
+                        "set_completed_count": (
+                            pre_submit.get("set") or {}
+                        ).get("completed_count"),
+                    },
+                },
+            )
+        except FC27Error as error:
+            if error.code not in SBC_TIMEOUT_CODES:
+                raise
+            raise FC27Error(
+                "SBC_SUBMIT_OUTCOME_UNKNOWN",
+                "The SBC submission request timed out before its outcome could be confirmed.",
+                recovery="Do not submit again. Reconcile this action_id through fresh challenge and inventory reads.",
+                details={"pre_submit": pre_submit, "submit_error": error.as_dict()},
+            ) from error
+        sync = None
+        post_submit = None
+        try:
+            submitted_item_ids = [
+                int(value) for value in response.get("submitted_item_ids") or []
+            ]
+            if submitted_item_ids != action["item_ids"]:
+                raise FC27Error(
+                    "SBC_SUBMIT_RESPONSE_MISMATCH",
+                    "EA submit response did not preserve the exact confirmed item order.",
+                    details={"submitted_item_ids": submitted_item_ids},
+                )
+            sync = self.sync_full("post_sbc_submit")
+            remaining = {
+                row["item_id"]
+                for row in self.runtime.items_by_ids(action["item_ids"])
+            }
+            if remaining:
+                raise FC27Error(
+                    "SBC_SUBMIT_READBACK_FAILED",
+                    "One or more confirmed items remain after the post-submit synchronization.",
+                    details={"remaining_item_ids": sorted(remaining)},
+                )
+            post_submit = self._call(
+                "readSbcSubmissionState",
+                {
+                    "set_id": action["set_id"],
+                    "challenge_id": action["challenge_id"],
+                },
+            )
+            captured = service.capture_challenge(post_submit)
+            evidence = {
+                "submitted_at_sync_id": sync["sync_id"],
+                "submitted_item_ids": action["item_ids"],
+                "source": "ea_webapp_fresh",
+                "pre_submit": pre_submit,
+                "post_submit": post_submit,
+                "ea": response,
+                "sync": sync,
+                "challenge": captured,
+            }
+            self.runtime.mark_sbc_solution_submitted(
+                action["solution_id"],
+                expected_sync_id,
+                action["set_id"],
+                action["challenge_id"],
+                action["item_ids"],
+                evidence,
+            )
+        except FC27Error as error:
+            raise FC27Error(
+                "SBC_SUBMIT_READBACK_PENDING",
+                "EA acknowledged the SBC submission, but fresh post-submit evidence is incomplete.",
+                recovery="Do not submit again. Reconcile this action_id through fresh challenge and inventory reads.",
+                details={
+                    "pre_submit": pre_submit,
+                    "submit": response,
+                    "sync": sync,
+                    "post_submit": post_submit,
+                    "readback_error": error.as_dict(),
+                },
+            ) from error
         return {"validation": validation["validation"], **evidence}
 
     def _sbc_service(self):

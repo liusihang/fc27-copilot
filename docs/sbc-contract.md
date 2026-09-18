@@ -57,7 +57,7 @@ The daemon does not expose a generic browser-method RPC. Browser write methods a
 
 All save-call timeout sources (`BRIDGE_TIMEOUT`, `PAGE_BRIDGE_TIMEOUT`, and `EA_SERVICE_TIMEOUT`) are normalized to `SBC_SAVE_OUTCOME_UNKNOWN`. That state permits only fresh read-only reconciliation. Public full synchronization and account execution share the same lock, and submit dispatch revalidates the batch's original `expected_sync_id` immediately before contacting EA.
 
-`submit_sbc` remains disabled until Issue #23 adds outcome-unknown handling, duplicate-submit rejection, and read-only challenge/inventory reconciliation for submit timeouts. Live submission also requires separate approval for permanent item consumption.
+`submit_sbc` remains disabled in the active policy while Issue #23 completes live acceptance. The implementation includes outcome-unknown handling, duplicate-submit rejection, and read-only challenge/inventory reconciliation. Live submission still requires separate approval for permanent item consumption.
 
 If the browser bridge times out after EA has already accepted the save, the action is recorded as failed and is not retried. Reconciliation accepts only the original `action_id`; the daemon derives the target from the failed audit row and performs its own fresh EA read. It requires the original batch sync to remain current, the solution to remain `validated`, and the set, challenge, persisted solution, eleven item IDs in order, freshness markers, and positive eligibility evidence to match. The action does not submit.
 
@@ -67,4 +67,34 @@ A completed saved action can be freshly verified by `action_id`. The daemon perf
 
 ## Submit action
 
-`submit_sbc` accepts only a solution whose status is `saved`. It reloads the saved EA squad and requires the exact confirmed item order before calling the Web App submission service. A complete post-submit inventory synchronization must prove every consumed item is absent. Challenge/reward state and consumed item IDs are then persisted in the action and solution evidence.
+`submit_sbc` accepts only a solution whose status is `saved`, whose canonical save evidence matches the current complete sync, and whose completed save audit matches the same set, challenge, and eleven ordered item IDs. Before the write call, the dispatcher performs another fresh saved-squad read and persists it as the action's pre-submit checkpoint. The checkpoint contains exact item order, eligibility evidence, repeatability, completion counters, rewards, and set/challenge identity.
+
+`BRIDGE_TIMEOUT`, `PAGE_BRIDGE_TIMEOUT`, and `EA_SERVICE_TIMEOUT` during the write call become `SBC_SUBMIT_OUTCOME_UNKNOWN`. A successful EA response followed by incomplete inventory or challenge readback becomes `SBC_SUBMIT_READBACK_PENDING`. Both states keep the solution `saved`, block every new submit action for that solution, and permit only reconciliation through the original `action_id`.
+
+After an acknowledged submit, a complete synchronization must advance beyond the original `expected_sync_id`. Every confirmed item must be absent from current inventory and have a `removed` event in a complete post-attempt synchronization. A fresh matching set/challenge read must then prove completion progress. Only after all evidence passes does the solution transition atomically from `saved` to `submitted`.
+
+### Repeatable outcome classification
+
+For repeatable SBCs, status reset and `completed=false` are expected after submission and do not prove failure. Every completion counter present on either side of the checkpoint must have a valid before/after pair, and all available deltas must agree:
+
+| Outcome | Completion counter | Inventory evidence | Saved squad evidence |
+| --- | --- | --- | --- |
+| success | exactly `before + 1` | all eleven absent; complete removal history | not required |
+| confirmed not applied | unchanged | all eleven present after a newer complete sync | same eleven ordered IDs, positive fresh eligibility |
+| still unknown | missing, conflicting, or any other delta | partial/contradictory evidence | absent or contradictory |
+
+`timesCompleted` increasing by more than one remains unknown because the action cannot be uniquely attributed. Static reward definitions do not prove reward delivery.
+
+Immediately before the page invokes the EA submit command, it rechecks the exact ordered item IDs, challenge-native eligibility, current controller identity, visible enabled Submit control, and every non-null baseline counter. A changed or missing value aborts the write.
+
+### Submit reconciliation
+
+The internal daemon RPC `reconcile_sbc_submit` accepts only `action_id`. It derives set, challenge, solution, item IDs, original sync, and checkpoint from the audit database; callers cannot provide evidence. Under the execution lock it performs a newer complete full sync, reads fresh submission state, and reads the saved squad only when all eleven items remain.
+
+Reconciliation can produce:
+
+- `complete`: exactly one completion is proven; the action and batch complete and the solution becomes `submitted`;
+- `SBC_SUBMIT_CONFIRMED_NOT_APPLIED`: completion is unchanged and the exact saved squad remains eligible; the solution remains `saved`, its save evidence is refreshed to the new sync, and a new confirmed submit may be created;
+- `SBC_SUBMIT_STILL_UNKNOWN`: evidence is incomplete or contradictory; the solution remains `saved` and new submits remain blocked.
+
+Repeated reconciliation of a completed or confirmed-not-applied action returns the stored result without another EA read or submission.

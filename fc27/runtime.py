@@ -609,6 +609,41 @@ class RuntimeDB:
             "expected_sync_id": state["batch"]["expected_sync_id"],
         }
 
+    def sbc_submit_reconciliation_target(self, action_id):
+        with self.connect() as connection:
+            action = connection.execute(
+                """SELECT action_type, status, error_code, result_json
+                   FROM actions WHERE action_id = ?""",
+                (action_id,),
+            ).fetchone()
+            if action is not None and action["action_type"] != "submit_sbc":
+                raise FC27Error(
+                    "INVALID_ACTION", f"Action {action_id} is not an SBC submit action."
+                )
+            if action is not None and (
+                action["status"] == "complete"
+                or action["error_code"] == "SBC_SUBMIT_CONFIRMED_NOT_APPLIED"
+            ):
+                return {
+                    "action_id": action_id,
+                    "resolved": True,
+                    "result": (
+                        json.loads(action["result_json"])
+                        if action["result_json"] is not None
+                        else None
+                    ),
+                }
+            state = self._sbc_submit_reconciliation_state(connection, action_id)
+        return {
+            "action_id": action_id,
+            "resolved": False,
+            "set_id": state["params"]["set_id"],
+            "challenge_id": state["params"]["challenge_id"],
+            "solution_id": state["params"]["solution_id"],
+            "item_ids": [int(value) for value in state["params"]["item_ids"]],
+            "expected_sync_id": state["batch"]["expected_sync_id"],
+        }
+
     def verify_sbc_saved_action(self, action_id, response):
         saved_item_ids = self._require_trusted_sbc_readback(response)
         with self.connect() as connection:
@@ -810,6 +845,251 @@ class RuntimeDB:
             connection.commit()
         return result
 
+    def reconcile_sbc_submit_action(
+        self, action_id, sync, post_submit, saved_squad=None
+    ):
+        self._require_trusted_sbc_submission_state(post_submit)
+        sync_id = sync.get("sync_id")
+        if sync.get("complete") is not True or not isinstance(sync_id, int):
+            raise FC27Error(
+                "SBC_SUBMIT_STILL_UNKNOWN",
+                "Submission reconciliation requires a newer complete club synchronization.",
+            )
+        with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            state = self._sbc_submit_reconciliation_state(connection, action_id)
+            action = state["action"]
+            batch = state["batch"]
+            solution = state["solution"]
+            params = state["params"]
+            pre_submit = state["pre_submit"]
+            expected_item_ids = [int(value) for value in params["item_ids"]]
+            current_sync_id = connection.execute(
+                "SELECT last_full_sync_id FROM account_state WHERE persona_id = ?",
+                (self.persona_id,),
+            ).fetchone()[0]
+            present_item_ids = [
+                int(row["item_id"])
+                for row in connection.execute(
+                    f"SELECT item_id FROM club_items WHERE item_id IN ({','.join('?' for _ in expected_item_ids)}) ORDER BY item_id",
+                    expected_item_ids,
+                )
+            ]
+            if current_sync_id != sync_id or sync_id <= batch["expected_sync_id"]:
+                connection.rollback()
+                raise FC27Error(
+                    "SBC_SUBMIT_STILL_UNKNOWN",
+                    "The reconciliation sync does not prove state after the original submit attempt.",
+                    details={
+                        "expected_sync_id": batch["expected_sync_id"],
+                        "evidence_sync_id": sync_id,
+                        "current_sync_id": current_sync_id,
+                    },
+                )
+            progress = self._classify_sbc_submit_outcome(
+                pre_submit,
+                post_submit,
+                expected_item_ids,
+                present_item_ids,
+                saved_squad,
+            )
+            removal_evidence = self._sbc_removed_item_evidence(
+                connection,
+                expected_item_ids,
+                batch["expected_sync_id"],
+                sync_id,
+            )
+            progress.update(removal_evidence)
+            if (
+                progress["outcome"] == "success"
+                and removal_evidence["removed_item_ids"] != sorted(expected_item_ids)
+            ):
+                progress["outcome"] = "unknown"
+                progress["reason"] = "complete removal history is missing"
+            evidence = {
+                "reconciled": True,
+                "source": "ea_webapp_fresh",
+                "submitted_at_sync_id": sync_id,
+                "submitted_item_ids": expected_item_ids,
+                "pre_submit": pre_submit,
+                "post_submit": post_submit,
+                "sync": sync,
+                "progress": progress,
+            }
+            if saved_squad is not None:
+                evidence["saved_squad"] = saved_squad
+            finished_at = utc_now()
+            allowed_errors = (
+                "BRIDGE_TIMEOUT",
+                "PAGE_BRIDGE_TIMEOUT",
+                "EA_SERVICE_TIMEOUT",
+                "SBC_SUBMIT_OUTCOME_UNKNOWN",
+                "SBC_SUBMIT_READBACK_PENDING",
+                "SBC_SUBMIT_STILL_UNKNOWN",
+            )
+            placeholders = ",".join("?" for _ in allowed_errors)
+            if progress["outcome"] == "success":
+                stored_result = {
+                    **evidence,
+                    "action_status": "complete",
+                    "error_code": None,
+                }
+                validation = json.loads(solution["validation_json"])
+                validation["execution"] = evidence
+                solution_update = connection.execute(
+                    """UPDATE sbc_solutions SET status = 'submitted', validation_json = ?
+                       WHERE solution_id = ? AND status IN ('saved', 'submitted')""",
+                    (
+                        json.dumps(
+                            validation,
+                            ensure_ascii=False,
+                            separators=(",", ":"),
+                            sort_keys=True,
+                        ),
+                        params["solution_id"],
+                    ),
+                )
+                action_update = connection.execute(
+                    f"""UPDATE actions SET status = 'complete', finished_at = ?,
+                         error_code = NULL, error_message = NULL, result_json = ?
+                       WHERE action_id = ? AND (
+                         status = 'running'
+                         OR (status = 'failed' AND error_code IN ({placeholders}))
+                       )""",
+                    (
+                        finished_at,
+                        json.dumps(
+                            stored_result,
+                            ensure_ascii=False,
+                            separators=(",", ":"),
+                            sort_keys=True,
+                        ),
+                        action_id,
+                        *allowed_errors,
+                    ),
+                )
+                if solution_update.rowcount != 1 or action_update.rowcount != 1:
+                    connection.rollback()
+                    raise FC27Error(
+                        "SBC_SUBMIT_RECONCILIATION_CONFLICT",
+                        "The submit action or solution changed during successful reconciliation.",
+                    )
+            elif progress["outcome"] == "not_applied":
+                stored_result = {
+                    **evidence,
+                    "action_status": "failed",
+                    "error_code": "SBC_SUBMIT_CONFIRMED_NOT_APPLIED",
+                }
+                refreshed_save_evidence = {
+                    "saved_at_sync_id": sync_id,
+                    "saved_item_ids": expected_item_ids,
+                    "ea_eligible": True,
+                    "verified": True,
+                    "reconciled_from_submit": True,
+                    "source": "ea_webapp_fresh",
+                    "ea": saved_squad,
+                }
+                validation = json.loads(solution["validation_json"])
+                validation["execution"] = refreshed_save_evidence
+                solution_update = connection.execute(
+                    """UPDATE sbc_solutions SET validation_json = ?
+                       WHERE solution_id = ? AND status = 'saved'""",
+                    (
+                        json.dumps(
+                            validation,
+                            ensure_ascii=False,
+                            separators=(",", ":"),
+                            sort_keys=True,
+                        ),
+                        params["solution_id"],
+                    ),
+                )
+                action_update = connection.execute(
+                    f"""UPDATE actions SET status = 'failed', finished_at = ?,
+                         error_code = 'SBC_SUBMIT_CONFIRMED_NOT_APPLIED',
+                         error_message = ?, result_json = ?
+                       WHERE action_id = ? AND (
+                         status = 'running'
+                         OR (status = 'failed' AND error_code IN ({placeholders}))
+                       )""",
+                    (
+                        finished_at,
+                        "Fresh inventory and challenge evidence prove the submit was not applied.",
+                        json.dumps(
+                            stored_result,
+                            ensure_ascii=False,
+                            separators=(",", ":"),
+                            sort_keys=True,
+                        ),
+                        action_id,
+                        *allowed_errors,
+                    ),
+                )
+                if action_update.rowcount != 1 or solution_update.rowcount != 1:
+                    connection.rollback()
+                    raise FC27Error(
+                        "SBC_SUBMIT_RECONCILIATION_CONFLICT",
+                        "The submit action or saved solution changed during failure reconciliation.",
+                    )
+            else:
+                stored_result = {
+                    **evidence,
+                    "action_status": "failed",
+                    "error_code": "SBC_SUBMIT_STILL_UNKNOWN",
+                }
+                action_update = connection.execute(
+                    f"""UPDATE actions SET status = 'failed', finished_at = ?,
+                         error_code = 'SBC_SUBMIT_STILL_UNKNOWN',
+                         error_message = ?, result_json = ?
+                       WHERE action_id = ? AND (
+                         status = 'running'
+                         OR (status = 'failed' AND error_code IN ({placeholders}))
+                       )""",
+                    (
+                        finished_at,
+                        "Fresh evidence does not prove whether exactly one SBC submission completed.",
+                        json.dumps(
+                            stored_result,
+                            ensure_ascii=False,
+                            separators=(",", ":"),
+                            sort_keys=True,
+                        ),
+                        action_id,
+                        *allowed_errors,
+                    ),
+                )
+                if action_update.rowcount != 1 or solution["status"] != "saved":
+                    connection.rollback()
+                    raise FC27Error(
+                        "SBC_SUBMIT_RECONCILIATION_CONFLICT",
+                        "The submit action or saved solution changed during unknown reconciliation.",
+                    )
+            statuses = [
+                row["status"]
+                for row in connection.execute(
+                    "SELECT status FROM actions WHERE batch_id = ?",
+                    (action["batch_id"],),
+                )
+            ]
+            if statuses and all(status == "complete" for status in statuses):
+                batch_status = "complete"
+            elif any(status == "complete" for status in statuses):
+                batch_status = "partial"
+            elif any(status == "failed" for status in statuses):
+                batch_status = "failed"
+            else:
+                batch_status = "running"
+            connection.execute(
+                "UPDATE action_batches SET status = ?, finished_at = ? WHERE batch_id = ?",
+                (
+                    batch_status,
+                    finished_at if batch_status in ("complete", "partial", "failed") else None,
+                    action["batch_id"],
+                ),
+            )
+            connection.commit()
+        return stored_result
+
     @staticmethod
     def _require_trusted_sbc_readback(response):
         saved_item_ids = [int(value) for value in response.get("saved_item_ids") or []]
@@ -837,6 +1117,163 @@ class RuntimeDB:
                 details={"source": response.get("source"), "eligibility": eligibility},
             )
         return saved_item_ids
+
+    @staticmethod
+    def _require_trusted_sbc_submission_state(response):
+        freshness = response.get("freshness") or {}
+        set_value = response.get("set") or {}
+        challenge = response.get("challenge") or {}
+        if (
+            response.get("source") != "ea_webapp_fresh"
+            or freshness.get("sets_requested") is not True
+            or freshness.get("challenges_requested") is not True
+            or set_value.get("id") is None
+            or challenge.get("id") is None
+        ):
+            raise FC27Error(
+                "SBC_SUBMIT_STATE_INVALID",
+                "SBC submission reconciliation requires a fresh matching set and challenge read.",
+                details={"source": response.get("source"), "freshness": freshness},
+            )
+        return {"set": set_value, "challenge": challenge}
+
+    @staticmethod
+    def _sbc_counter(value):
+        if value is None or isinstance(value, bool):
+            return None
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+
+    @classmethod
+    def _classify_sbc_submit_outcome(
+        cls, pre_submit, post_submit, expected_item_ids, present_item_ids, saved_squad=None
+    ):
+        saved_item_ids = cls._require_trusted_sbc_readback(pre_submit)
+        state = cls._require_trusted_sbc_submission_state(post_submit)
+        expected_item_ids = [int(value) for value in expected_item_ids]
+        present_item_ids = sorted(int(value) for value in present_item_ids)
+        if saved_item_ids != expected_item_ids:
+            raise FC27Error(
+                "SBC_SUBMIT_STATE_INVALID",
+                "The pre-submit saved squad does not match the confirmed item order.",
+            )
+        pre_set = pre_submit.get("set") or {}
+        pre_challenge = pre_submit.get("challenge") or {}
+        post_set = state["set"]
+        post_challenge = state["challenge"]
+        if (
+            str(pre_set.get("id")) != str(post_set.get("id"))
+            or str(pre_challenge.get("id")) != str(post_challenge.get("id"))
+        ):
+            raise FC27Error(
+                "SBC_SUBMIT_STATE_INVALID",
+                "The post-submit set or challenge identity does not match the baseline.",
+            )
+        counters = {}
+        incomplete_counter_sources = []
+        for source, before, after in (
+            (
+                "challenge.times_completed",
+                pre_challenge.get("times_completed"),
+                post_challenge.get("times_completed"),
+            ),
+            (
+                "set.times_completed",
+                pre_set.get("times_completed"),
+                post_set.get("times_completed"),
+            ),
+            (
+                "set.completed_count",
+                pre_set.get("completed_count"),
+                post_set.get("completed_count"),
+            ),
+        ):
+            before_value = cls._sbc_counter(before)
+            after_value = cls._sbc_counter(after)
+            if before_value is not None and after_value is not None:
+                counters[source] = {
+                    "before": before_value,
+                    "after": after_value,
+                    "delta": after_value - before_value,
+                }
+            elif before is not None or after is not None:
+                incomplete_counter_sources.append(source)
+        counter_deltas = {value["delta"] for value in counters.values()}
+        counter_consistent = (
+            bool(counters)
+            and not incomplete_counter_sources
+            and len(counter_deltas) == 1
+        )
+        counter_delta = next(iter(counter_deltas)) if counter_consistent else None
+        counter_source = next(iter(counters)) if len(counters) == 1 else None
+        before_counter = (
+            counters[counter_source]["before"] if counter_source is not None else None
+        )
+        after_counter = (
+            counters[counter_source]["after"] if counter_source is not None else None
+        )
+        repeatable = bool(
+            pre_challenge.get("repeatable") or pre_set.get("repeatable")
+        )
+        all_absent = not present_item_ids
+        all_present = present_item_ids == sorted(expected_item_ids)
+        if repeatable:
+            success = counter_consistent and counter_delta == 1 and all_absent
+            not_applied = counter_consistent and counter_delta == 0 and all_present
+        else:
+            pre_completed = bool(
+                pre_challenge.get("completed") or pre_set.get("completed")
+            )
+            post_completed = bool(
+                post_challenge.get("completed") or post_set.get("completed")
+            )
+            success = not pre_completed and post_completed and all_absent
+            not_applied = not pre_completed and not post_completed and all_present
+        trusted_saved_squad = False
+        if not_applied and saved_squad is not None:
+            trusted_saved_squad = (
+                cls._require_trusted_sbc_readback(saved_squad) == expected_item_ids
+            )
+            not_applied = trusted_saved_squad
+        elif not_applied:
+            not_applied = False
+        outcome = "success" if success else ("not_applied" if not_applied else "unknown")
+        return {
+            "outcome": outcome,
+            "repeatable": repeatable,
+            "counter_source": counter_source,
+            "counters": counters,
+            "incomplete_counter_sources": incomplete_counter_sources,
+            "counter_consistent": counter_consistent,
+            "before_counter": before_counter,
+            "after_counter": after_counter,
+            "counter_delta": counter_delta,
+            "present_item_ids": present_item_ids,
+            "missing_item_ids": sorted(set(expected_item_ids) - set(present_item_ids)),
+            "trusted_saved_squad": trusted_saved_squad,
+        }
+
+    @staticmethod
+    def _sbc_removed_item_evidence(
+        connection, item_ids, after_sync_id, through_sync_id
+    ):
+        rows = connection.execute(
+            f"""SELECT ic.item_id, ic.sync_id
+                FROM inventory_changes AS ic
+                JOIN sync_runs AS sr ON sr.sync_id = ic.sync_id
+                WHERE ic.change_type = 'removed'
+                  AND ic.item_id IN ({','.join('?' for _ in item_ids)})
+                  AND ic.sync_id > ? AND ic.sync_id <= ?
+                  AND sr.status = 'complete'
+                ORDER BY ic.item_id, ic.sync_id""",
+            [*item_ids, after_sync_id, through_sync_id],
+        ).fetchall()
+        return {
+            "removed_item_ids": sorted({int(row["item_id"]) for row in rows}),
+            "removal_sync_ids": sorted({int(row["sync_id"]) for row in rows}),
+        }
 
     def _sbc_save_reconciliation_state(self, connection, action_id):
         action = connection.execute(
@@ -954,6 +1391,119 @@ class RuntimeDB:
             "params": params,
         }
 
+    @staticmethod
+    def _sbc_submit_checkpoint(action):
+        result = json.loads(action["result_json"]) if action["result_json"] else {}
+        if result.get("pre_submit") is not None:
+            return result["pre_submit"]
+        return (
+            result.get("error", {}).get("details", {}).get("pre_submit")
+        )
+
+    def _sbc_submit_reconciliation_state(self, connection, action_id):
+        action = connection.execute(
+            "SELECT * FROM actions WHERE action_id = ?", (action_id,)
+        ).fetchone()
+        if action is None:
+            raise FC27Error("ACTION_NOT_FOUND", f"Action {action_id} was not found.")
+        if action["action_type"] != "submit_sbc":
+            raise FC27Error(
+                "INVALID_ACTION", f"Action {action_id} is not an SBC submit action."
+            )
+        allowed_errors = (
+            "BRIDGE_TIMEOUT",
+            "PAGE_BRIDGE_TIMEOUT",
+            "EA_SERVICE_TIMEOUT",
+            "SBC_SUBMIT_OUTCOME_UNKNOWN",
+            "SBC_SUBMIT_READBACK_PENDING",
+            "SBC_SUBMIT_STILL_UNKNOWN",
+        )
+        if not (
+            action["status"] == "running"
+            or (
+                action["status"] == "failed"
+                and action["error_code"] in allowed_errors
+            )
+        ):
+            raise FC27Error(
+                "SBC_SUBMIT_RECONCILIATION_NOT_ALLOWED",
+                "Only a running or unresolved SBC submit action can be reconciled.",
+            )
+        batch = connection.execute(
+            "SELECT * FROM action_batches WHERE batch_id = ?", (action["batch_id"],)
+        ).fetchone()
+        if batch is None or batch["status"] not in ("running", "failed", "partial"):
+            raise FC27Error(
+                "SBC_SUBMIT_RECONCILIATION_NOT_ALLOWED",
+                "The containing submit batch is not running, failed, or partial.",
+            )
+        params = json.loads(action["params_json"])
+        solution = connection.execute(
+            "SELECT * FROM sbc_solutions WHERE solution_id = ?",
+            (params["solution_id"],),
+        ).fetchone()
+        if solution is None:
+            raise FC27Error(
+                "SBC_SOLUTION_NOT_FOUND",
+                f"SBC solution {params['solution_id']} was not found.",
+            )
+        if (
+            str(solution["challenge_id"]) != str(params["challenge_id"])
+            or solution["status"] not in ("saved", "submitted")
+        ):
+            raise FC27Error(
+                "SBC_SUBMIT_RECONCILIATION_NOT_ALLOWED",
+                "The submit action does not reference the expected saved or submitted solution.",
+            )
+        expected_item_ids = [int(value) for value in params["item_ids"]]
+        persisted_item_ids = [
+            int(row["item_id"])
+            for row in connection.execute(
+                """SELECT item_id FROM sbc_solution_items
+                   WHERE solution_id = ? ORDER BY slot_index""",
+                (params["solution_id"],),
+            )
+        ]
+        if persisted_item_ids != expected_item_ids:
+            raise FC27Error(
+                "SBC_SUBMIT_RECONCILIATION_NOT_ALLOWED",
+                "The persisted solution item order no longer matches the submit action.",
+            )
+        pre_submit = self._sbc_submit_checkpoint(action)
+        if pre_submit is None:
+            raise FC27Error(
+                "SBC_SUBMIT_RECONCILIATION_NOT_ALLOWED",
+                "The submit action has no trusted pre-submit checkpoint.",
+            )
+        saved_item_ids = self._require_trusted_sbc_readback(pre_submit)
+        if (
+            saved_item_ids != expected_item_ids
+            or str((pre_submit.get("set") or {}).get("id"))
+            != str(params["set_id"])
+            or str((pre_submit.get("challenge") or {}).get("id"))
+            != str(params["challenge_id"])
+        ):
+            raise FC27Error(
+                "SBC_SUBMIT_RECONCILIATION_NOT_ALLOWED",
+                "The pre-submit checkpoint does not match the exact action target.",
+            )
+        current_sync_id = connection.execute(
+            "SELECT last_full_sync_id FROM account_state WHERE persona_id = ?",
+            (self.persona_id,),
+        ).fetchone()[0]
+        if current_sync_id < batch["expected_sync_id"]:
+            raise FC27Error(
+                "STALE_CLUB_STATE",
+                "The current club synchronization predates the original submit batch.",
+            )
+        return {
+            "action": action,
+            "batch": batch,
+            "solution": solution,
+            "params": params,
+            "pre_submit": pre_submit,
+        }
+
     def upsert_sbc_sets(self, sets):
         with self.connect() as connection:
             for value in sets:
@@ -1025,6 +1575,7 @@ class RuntimeDB:
                         json.dumps(
                             {
                                 "completed": value["completed"],
+                                "times_completed": value.get("times_completed"),
                                 "expires_at": value["expires_at"],
                                 "formation": value["formation"],
                                 "slots": value["slots"],
@@ -1174,6 +1725,83 @@ class RuntimeDB:
         result["slots"] = [dict(value) for value in items]
         return result
 
+    def record_sbc_submit_checkpoint(self, action_id, expected_sync_id, response):
+        saved_item_ids = self._require_trusted_sbc_readback(response)
+        with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            action = connection.execute(
+                "SELECT * FROM actions WHERE action_id = ?", (action_id,)
+            ).fetchone()
+            if (
+                action is None
+                or action["action_type"] != "submit_sbc"
+                or action["status"] != "running"
+            ):
+                connection.rollback()
+                raise FC27Error(
+                    "SBC_SUBMIT_CHECKPOINT_CONFLICT",
+                    "The running SBC submit action was not found for checkpointing.",
+                )
+            batch = connection.execute(
+                "SELECT * FROM action_batches WHERE batch_id = ?",
+                (action["batch_id"],),
+            ).fetchone()
+            params = json.loads(action["params_json"])
+            solution = connection.execute(
+                "SELECT * FROM sbc_solutions WHERE solution_id = ?",
+                (params["solution_id"],),
+            ).fetchone()
+            current_sync_id = connection.execute(
+                "SELECT last_full_sync_id FROM account_state WHERE persona_id = ?",
+                (self.persona_id,),
+            ).fetchone()[0]
+            expected_item_ids = [int(value) for value in params["item_ids"]]
+            set_value = response.get("set") or {}
+            challenge = response.get("challenge") or {}
+            if (
+                batch is None
+                or batch["status"] != "running"
+                or int(batch["expected_sync_id"]) != expected_sync_id
+                or current_sync_id != expected_sync_id
+                or solution is None
+                or solution["status"] != "saved"
+                or saved_item_ids != expected_item_ids
+                or str(set_value.get("id")) != str(params["set_id"])
+                or str(challenge.get("id")) != str(params["challenge_id"])
+            ):
+                connection.rollback()
+                raise FC27Error(
+                    "SBC_SUBMIT_CHECKPOINT_CONFLICT",
+                    "The submit action, saved solution, sync, or fresh squad changed before checkpointing.",
+                )
+            checkpoint = {
+                "phase": "pre_submit_verified",
+                "expected_sync_id": expected_sync_id,
+                "pre_submit": response,
+                "saved_item_ids": saved_item_ids,
+            }
+            updated = connection.execute(
+                """UPDATE actions SET result_json = ?
+                   WHERE action_id = ? AND status = 'running'""",
+                (
+                    json.dumps(
+                        checkpoint,
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                        sort_keys=True,
+                    ),
+                    action_id,
+                ),
+            )
+            if updated.rowcount != 1:
+                connection.rollback()
+                raise FC27Error(
+                    "SBC_SUBMIT_CHECKPOINT_CONFLICT",
+                    "The submit action changed during checkpoint persistence.",
+                )
+            connection.commit()
+        return checkpoint
+
     def require_new_sbc_save_attempt(self, solution_id):
         with self.connect() as connection:
             solution = connection.execute(
@@ -1217,6 +1845,47 @@ class RuntimeDB:
                 },
             )
 
+    def require_new_sbc_submit_attempt(self, solution_id):
+        with self.connect() as connection:
+            solution = connection.execute(
+                "SELECT status FROM sbc_solutions WHERE solution_id = ?",
+                (solution_id,),
+            ).fetchone()
+            if solution is None:
+                raise FC27Error(
+                    "SBC_SOLUTION_NOT_FOUND", f"SBC solution {solution_id} was not found."
+                )
+            prior = connection.execute(
+                """SELECT action_id, batch_id, status, error_code FROM actions
+                   WHERE action_type = 'submit_sbc'
+                     AND json_extract(params_json, '$.solution_id') = ?
+                     AND (
+                       status IN ('pending', 'running', 'complete')
+                       OR error_code IN (
+                         'BRIDGE_TIMEOUT',
+                         'PAGE_BRIDGE_TIMEOUT',
+                         'EA_SERVICE_TIMEOUT',
+                         'SBC_SUBMIT_OUTCOME_UNKNOWN',
+                         'SBC_SUBMIT_READBACK_PENDING',
+                         'SBC_SUBMIT_STILL_UNKNOWN'
+                       )
+                     )
+                   ORDER BY started_at DESC, action_id DESC LIMIT 1""",
+                (solution_id,),
+            ).fetchone()
+        if prior is not None:
+            raise FC27Error(
+                "SBC_SUBMIT_ALREADY_ATTEMPTED",
+                "This SBC solution already has an active, completed, or unresolved submit action.",
+                recovery="Replay or reconcile the original action_id. Do not submit through a new batch.",
+                details={
+                    "action_id": prior["action_id"],
+                    "batch_id": prior["batch_id"],
+                    "status": prior["status"],
+                    "error_code": prior["error_code"],
+                },
+            )
+
     def require_completed_sbc_save(
         self, solution_id, expected_sync_id, set_id, challenge_id, item_ids
     ):
@@ -1254,11 +1923,173 @@ class RuntimeDB:
                 "action_id": row["action_id"],
                 "batch_id": row["batch_id"],
             }
+        with self.connect() as connection:
+            rows = connection.execute(
+                """SELECT a.action_id, a.params_json, a.result_json, a.batch_id
+                   FROM actions AS a
+                   WHERE a.action_type = 'submit_sbc'
+                     AND a.status = 'failed'
+                     AND a.error_code = 'SBC_SUBMIT_CONFIRMED_NOT_APPLIED'
+                     AND json_extract(a.params_json, '$.solution_id') = ?
+                   ORDER BY a.finished_at DESC""",
+                (solution_id,),
+            ).fetchall()
+        for row in rows:
+            params = json.loads(row["params_json"])
+            result = json.loads(row["result_json"]) if row["result_json"] else {}
+            saved_squad = result.get("saved_squad") or {}
+            try:
+                saved_item_ids = self._require_trusted_sbc_readback(saved_squad)
+            except FC27Error:
+                continue
+            if (
+                str(params.get("set_id")) != str(set_id)
+                or str(params.get("challenge_id")) != str(challenge_id)
+                or [int(value) for value in params.get("item_ids") or []]
+                != expected_item_ids
+                or result.get("submitted_at_sync_id") != expected_sync_id
+                or saved_item_ids != expected_item_ids
+            ):
+                continue
+            return {
+                "action_id": row["action_id"],
+                "batch_id": row["batch_id"],
+                "source": "confirmed_not_applied_submit",
+            }
         raise FC27Error(
             "SBC_SAVE_AUDIT_INCOMPLETE",
             "SBC submission requires a matching completed save action and completed batch.",
             recovery="Finish or reconcile the original save audit before submitting.",
         )
+
+    def mark_sbc_solution_submitted(
+        self,
+        solution_id,
+        expected_sync_id,
+        set_id,
+        challenge_id,
+        item_ids,
+        evidence,
+    ):
+        expected_item_ids = [int(value) for value in item_ids]
+        sync = evidence.get("sync") or {}
+        submitted_sync_id = sync.get("sync_id")
+        if sync.get("complete") is not True or not isinstance(submitted_sync_id, int):
+            raise FC27Error(
+                "SBC_SUBMIT_READBACK_FAILED",
+                "SBC submission requires a newer complete post-submit synchronization.",
+            )
+        post_submit = evidence.get("post_submit") or {}
+        pre_submit = evidence.get("pre_submit") or {}
+        self._require_trusted_sbc_submission_state(post_submit)
+        saved_item_ids = self._require_trusted_sbc_readback(pre_submit)
+        if saved_item_ids != expected_item_ids:
+            raise FC27Error(
+                "SBC_SUBMIT_STATE_INVALID",
+                "The pre-submit squad no longer matches the confirmed item order.",
+            )
+        if (
+            str((pre_submit.get("set") or {}).get("id")) != str(set_id)
+            or str((pre_submit.get("challenge") or {}).get("id"))
+            != str(challenge_id)
+            or str((post_submit.get("set") or {}).get("id")) != str(set_id)
+            or str((post_submit.get("challenge") or {}).get("id"))
+            != str(challenge_id)
+        ):
+            raise FC27Error(
+                "SBC_SUBMIT_STATE_INVALID",
+                "The pre-submit or post-submit set/challenge identity does not match the action.",
+            )
+        with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            account = connection.execute(
+                "SELECT last_full_sync_id FROM account_state WHERE persona_id = ?",
+                (self.persona_id,),
+            ).fetchone()
+            current_sync_id = account["last_full_sync_id"] if account else None
+            present_item_ids = [
+                int(row["item_id"])
+                for row in connection.execute(
+                    f"SELECT item_id FROM club_items WHERE item_id IN ({','.join('?' for _ in expected_item_ids)}) ORDER BY item_id",
+                    expected_item_ids,
+                )
+            ]
+            solution = connection.execute(
+                "SELECT status, validation_json FROM sbc_solutions WHERE solution_id = ?",
+                (solution_id,),
+            ).fetchone()
+            persisted_item_ids = [
+                int(row["item_id"])
+                for row in connection.execute(
+                    """SELECT item_id FROM sbc_solution_items
+                       WHERE solution_id = ? ORDER BY slot_index""",
+                    (solution_id,),
+                )
+            ]
+            if (
+                current_sync_id != submitted_sync_id
+                or submitted_sync_id <= expected_sync_id
+                or solution is None
+                or solution["status"] != "saved"
+                or persisted_item_ids != expected_item_ids
+            ):
+                connection.rollback()
+                raise FC27Error(
+                    "SBC_SUBMIT_STATE_CONFLICT",
+                    "The solution, item order, or post-submit synchronization changed before finalization.",
+                )
+            progress = self._classify_sbc_submit_outcome(
+                pre_submit,
+                post_submit,
+                expected_item_ids,
+                present_item_ids,
+            )
+            removal_evidence = self._sbc_removed_item_evidence(
+                connection, expected_item_ids, expected_sync_id, submitted_sync_id
+            )
+            progress.update(removal_evidence)
+            if (
+                progress["outcome"] == "success"
+                and removal_evidence["removed_item_ids"] != sorted(expected_item_ids)
+            ):
+                connection.rollback()
+                raise FC27Error(
+                    "SBC_SUBMIT_PROGRESS_UNPROVEN",
+                    "Post-submit sync history does not record removal of every confirmed item.",
+                    details=progress,
+                )
+            if progress["outcome"] != "success":
+                connection.rollback()
+                raise FC27Error(
+                    "SBC_SUBMIT_PROGRESS_UNPROVEN",
+                    "Post-submit inventory and challenge progress do not prove exactly one completion.",
+                    details=progress,
+                )
+            canonical_evidence = {**evidence, "progress": progress}
+            validation = json.loads(solution["validation_json"])
+            validation["execution"] = canonical_evidence
+            updated = connection.execute(
+                """UPDATE sbc_solutions SET status = 'submitted', validation_json = ?
+                   WHERE solution_id = ? AND status = 'saved'""",
+                (
+                    json.dumps(
+                        validation,
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                        sort_keys=True,
+                    ),
+                    solution_id,
+                ),
+            )
+            if updated.rowcount != 1:
+                connection.rollback()
+                raise FC27Error(
+                    "SBC_SUBMIT_STATE_CONFLICT",
+                    "The SBC solution changed during submit finalization.",
+                )
+            connection.commit()
+        evidence["progress"] = progress
+        return canonical_evidence
 
     def mark_sbc_solution_saved(self, solution_id, expected_sync_id, evidence):
         with self.connect() as connection:

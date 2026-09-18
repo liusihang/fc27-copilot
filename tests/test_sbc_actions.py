@@ -37,22 +37,31 @@ class FakeBridge:
         return {"ok": True, "data": value}
 
 
-def browser_challenge(item_ids=None):
+def browser_challenge(item_ids=None, *, times_completed=0, status="IN_PROGRESS"):
     value = {
         "set": {
             "id": 4,
             "name": "Bronze Upgrade",
             "repeatable": True,
+            "completed": False,
+            "completed_count": times_completed,
+            "times_completed": times_completed,
             "rewards": [],
-            "raw": {"id": 4},
+            "raw": {
+                "id": 4,
+                "repeatable": True,
+                "challengesCompletedCount": times_completed,
+                "timesCompleted": times_completed,
+            },
         },
         "challenge": {
             "id": 16,
             "set_id": 4,
             "name": "Bronze Upgrade",
-            "status": "NOT_STARTED",
+            "status": status,
             "repeatable": True,
             "completed": False,
+            "times_completed": times_completed,
             "formation": "f41212",
             "rewards": [],
             "requirements": [
@@ -62,7 +71,13 @@ def browser_challenge(item_ids=None):
                     "scope": 2,
                 }
             ],
-            "raw": {"id": 16, "formation": "f41212"},
+            "raw": {
+                "id": 16,
+                "formation": "f41212",
+                "repeatable": True,
+                "status": status,
+                "timesCompleted": times_completed,
+            },
         },
     }
     if item_ids is not None:
@@ -83,6 +98,20 @@ def browser_challenge(item_ids=None):
             "challenges_requested": True,
             "challenge_loaded": True,
         }
+    return value
+
+
+def submission_state(times_completed, *, status="NOT_STARTED", completed=False):
+    value = browser_challenge(
+        times_completed=times_completed,
+        status=status,
+    )
+    value["challenge"]["completed"] = completed
+    value["source"] = "ea_webapp_fresh"
+    value["freshness"] = {
+        "sets_requested": True,
+        "challenges_requested": True,
+    }
     return value
 
 
@@ -215,6 +244,60 @@ class SbcActionTest(unittest.TestCase):
             connection.commit()
         return action
 
+    def save_solution(self, batch_id="fixture-save"):
+        item_ids = self.solution["item_ids"]
+        bridge = FakeBridge(
+            {
+                "saveSbcSquad": {"status": 200},
+                "readSavedSbcSquad": browser_challenge(item_ids),
+            }
+        )
+        result = self.execute(
+            "save_sbc_squad", bridge, lambda kind: None, batch_id
+        )
+        self.assertEqual(result["batch"]["status"], "complete")
+        return result
+
+    def complete_sync(self, *, present_item_ids):
+        present_item_ids = set(present_item_ids)
+        items = [
+            {
+                **row,
+                "tradeable": bool(row["tradeable"]),
+                "protected": bool(row["protected"]),
+            }
+            for row in self.runtime.items_by_ids(self.solution["item_ids"])
+            if row["item_id"] in present_item_ids
+        ]
+        sync_id = self.runtime.begin_sync("fixture_submit_reconcile")
+        payload = {
+            area: {
+                "area": area,
+                "page_count": 1,
+                "item_count": len(items) if area == "club" else 0,
+                "complete": True,
+                "items": items if area == "club" else [],
+                "listings": [],
+                **({"coin_balance": 10000} if area == "coins" else {}),
+            }
+            for area in REQUIRED
+        }
+        for result in payload.values():
+            self.runtime.record_sync_part(sync_id, result)
+        return self.runtime.commit_full_sync(sync_id, payload, REQUIRED)
+
+    def submit_timeout(self, error_code, batch_id="fixture-submit-timeout"):
+        self.save_solution(f"{batch_id}-save")
+        item_ids = self.solution["item_ids"]
+        bridge = FakeBridge(
+            {
+                "readSavedSbcSquad": browser_challenge(item_ids),
+                "submitSbc": FC27Error(error_code, "timed out"),
+            }
+        )
+        result = self.execute("submit_sbc", bridge, lambda kind: None, batch_id)
+        return result, bridge
+
     def test_save_then_submit_uses_exact_items_and_post_submit_sync(self):
         item_ids = self.solution["item_ids"]
         save_bridge = FakeBridge(
@@ -251,8 +334,9 @@ class SbcActionTest(unittest.TestCase):
 
         submit_bridge = FakeBridge(
             {
+                "readSavedSbcSquad": browser_challenge(item_ids),
                 "submitSbc": {"submitted_item_ids": item_ids, "success": True},
-                "getSbcChallenge": browser_challenge(),
+                "readSbcSubmissionState": submission_state(1),
             }
         )
         submitted = self.execute(
@@ -264,6 +348,21 @@ class SbcActionTest(unittest.TestCase):
             "submitted",
         )
         self.assertEqual(self.runtime.items_by_ids(item_ids), [])
+        self.assertEqual(
+            submitted["actions"][0]["result"]["progress"]["removed_item_ids"],
+            sorted(item_ids),
+        )
+        submit_call = next(
+            params for method, params in submit_bridge.calls if method == "submitSbc"
+        )
+        self.assertEqual(
+            submit_call["expected_counters"],
+            {
+                "challenge_times_completed": 0,
+                "set_times_completed": 0,
+                "set_completed_count": 0,
+            },
+        )
 
     def test_submit_requires_positive_ea_eligibility_readback(self):
         self.runtime.update_sbc_solution_status(
@@ -469,6 +568,40 @@ class SbcActionTest(unittest.TestCase):
             )
         self.assertEqual(bridge.calls, [])
 
+    def test_batch_rejects_two_submits_for_same_solution_before_audit(self):
+        self.save_solution("duplicate-submit-save")
+        policy = json.loads(self.policy_path.read_text(encoding="utf-8"))
+        policy["maximum_batch_actions"] = 2
+        policy["allowed_action_types"] = ["submit_sbc"]
+        self.policy_path.write_text(json.dumps(policy), encoding="utf-8")
+        bridge = FakeBridge({})
+        service = ExecutionService(
+            self.runtime,
+            PolicyStore(self.policy_path),
+            dispatcher=ActionDispatcher(
+                bridge, self.runtime, lambda kind: None, catalog=self.catalog
+            ),
+        )
+        with self.assertRaisesRegex(FC27Error, "multiple submit actions"):
+            service.execute(
+                {
+                    "batch_id": "duplicate-submit-batch",
+                    "expected_sync_id": 1,
+                    "confirmed": True,
+                    "stop_on_error": False,
+                    "actions": [
+                        self.action("submit_sbc", "duplicate-submit-1"),
+                        self.action("submit_sbc", "duplicate-submit-2"),
+                    ],
+                }
+            )
+        self.assertEqual(bridge.calls, [])
+        with self.runtime.connect() as connection:
+            count = connection.execute(
+                "SELECT COUNT(*) FROM actions WHERE action_type = 'submit_sbc'"
+            ).fetchone()[0]
+        self.assertEqual(count, 0)
+
     def test_submit_rechecks_batch_sync_before_ea_contact(self):
         item_ids = self.solution["item_ids"]
         save_bridge = FakeBridge(
@@ -509,6 +642,287 @@ class SbcActionTest(unittest.TestCase):
         self.assertEqual(result["batch"]["status"], "failed")
         self.assertEqual(result["actions"][0]["error_code"], "STALE_CLUB_STATE")
         self.assertEqual(submit_bridge.calls, [])
+
+    def _assert_submit_timeout_blocks_retry(self, error_code):
+        result, bridge = self.submit_timeout(error_code, error_code)
+        self.assertEqual(result["batch"]["status"], "failed")
+        self.assertEqual(
+            result["actions"][0]["error_code"], "SBC_SUBMIT_OUTCOME_UNKNOWN"
+        )
+        self.assertEqual(
+            [method for method, _ in bridge.calls],
+            ["readSavedSbcSquad", "submitSbc"],
+        )
+        target = self.runtime.sbc_submit_reconciliation_target("submit_sbc-1")
+        self.assertFalse(target["resolved"])
+        bridge.calls.clear()
+        dispatcher = ActionDispatcher(
+            bridge, self.runtime, lambda kind: None, catalog=self.catalog
+        )
+        service = ExecutionService(
+            self.runtime, self.policy("submit_sbc"), dispatcher=dispatcher
+        )
+        with self.assertRaisesRegex(
+            FC27Error, "already has an active, completed, or unresolved"
+        ):
+            service.execute(
+                {
+                    "batch_id": f"{error_code}-replacement",
+                    "expected_sync_id": 1,
+                    "confirmed": True,
+                    "actions": [
+                        self.action(
+                            "submit_sbc", f"{error_code}-replacement-action"
+                        )
+                    ],
+                }
+            )
+        self.assertEqual(bridge.calls, [])
+
+    def test_bridge_submit_timeout_blocks_a_second_submit(self):
+        self._assert_submit_timeout_blocks_retry("BRIDGE_TIMEOUT")
+
+    def test_page_bridge_submit_timeout_blocks_a_second_submit(self):
+        self._assert_submit_timeout_blocks_retry("PAGE_BRIDGE_TIMEOUT")
+
+    def test_ea_service_submit_timeout_blocks_a_second_submit(self):
+        self._assert_submit_timeout_blocks_retry("EA_SERVICE_TIMEOUT")
+
+    def test_submit_acknowledged_sync_failure_is_readback_pending(self):
+        self.save_solution("submit-sync-failure-save")
+        item_ids = self.solution["item_ids"]
+        bridge = FakeBridge(
+            {
+                "readSavedSbcSquad": browser_challenge(item_ids),
+                "submitSbc": {"submitted_item_ids": item_ids, "success": True},
+            }
+        )
+
+        def fail_sync(kind):
+            raise FC27Error("SYNC_FAILED", "sync failed")
+
+        result = self.execute(
+            "submit_sbc", bridge, fail_sync, "submit-sync-failure"
+        )
+        self.assertEqual(
+            result["actions"][0]["error_code"], "SBC_SUBMIT_READBACK_PENDING"
+        )
+        self.assertEqual(
+            [method for method, _ in bridge.calls],
+            ["readSavedSbcSquad", "submitSbc"],
+        )
+        target = self.runtime.sbc_submit_reconciliation_target("submit_sbc-1")
+        self.assertFalse(target["resolved"])
+
+    def test_submit_acknowledged_challenge_read_failure_preserves_sync_for_reconciliation(self):
+        self.save_solution("submit-challenge-failure-save")
+        item_ids = self.solution["item_ids"]
+        bridge = FakeBridge(
+            {
+                "readSavedSbcSquad": browser_challenge(item_ids),
+                "submitSbc": {"submitted_item_ids": item_ids, "success": True},
+                "readSbcSubmissionState": FC27Error(
+                    "EA_SERVICE_TIMEOUT", "challenge read timed out"
+                ),
+            }
+        )
+
+        def sync_full(kind):
+            return self.complete_sync(present_item_ids=[])
+
+        result = self.execute(
+            "submit_sbc", bridge, sync_full, "submit-challenge-failure"
+        )
+        self.assertEqual(
+            result["actions"][0]["error_code"], "SBC_SUBMIT_READBACK_PENDING"
+        )
+        error = result["actions"][0]["result"]["error"]
+        self.assertEqual(error["details"]["submit"]["submitted_item_ids"], item_ids)
+        self.assertEqual(
+            [method for method, _ in bridge.calls],
+            ["readSavedSbcSquad", "submitSbc", "readSbcSubmissionState"],
+        )
+
+    def test_submit_rejects_protected_or_missing_items_before_ea_contact(self):
+        self.save_solution("submit-protected-save")
+        item_ids = self.solution["item_ids"]
+        bridge = FakeBridge({})
+        dispatcher = ActionDispatcher(
+            bridge, self.runtime, lambda kind: None, catalog=self.catalog
+        )
+        service = ExecutionService(
+            self.runtime, self.policy("submit_sbc"), dispatcher=dispatcher
+        )
+        with self.runtime.connect() as connection:
+            connection.execute(
+                "UPDATE club_items SET protected = 1 WHERE item_id = ?",
+                (item_ids[0],),
+            )
+            connection.commit()
+        with self.assertRaisesRegex(FC27Error, "protected"):
+            service.execute(
+                {
+                    "batch_id": "submit-protected",
+                    "expected_sync_id": 1,
+                    "confirmed": True,
+                    "actions": [self.action("submit_sbc", "submit-protected-action")],
+                }
+            )
+        self.assertEqual(bridge.calls, [])
+        with self.runtime.connect() as connection:
+            connection.execute(
+                "UPDATE club_items SET protected = 0 WHERE item_id = ?",
+                (item_ids[0],),
+            )
+            connection.execute(
+                "DELETE FROM club_items WHERE item_id = ?", (item_ids[0],)
+            )
+            connection.commit()
+        with self.assertRaisesRegex(FC27Error, "absent"):
+            service.execute(
+                {
+                    "batch_id": "submit-missing",
+                    "expected_sync_id": 1,
+                    "confirmed": True,
+                    "actions": [self.action("submit_sbc", "submit-missing-action")],
+                }
+            )
+        self.assertEqual(bridge.calls, [])
+
+    def test_reconcile_repeatable_submit_success_requires_one_increment_and_all_absent(self):
+        result, _ = self.submit_timeout("BRIDGE_TIMEOUT", "reconcile-success")
+        self.assertEqual(
+            result["actions"][0]["error_code"], "SBC_SUBMIT_OUTCOME_UNKNOWN"
+        )
+        sync = self.complete_sync(present_item_ids=[])
+        reconciled = self.runtime.reconcile_sbc_submit_action(
+            "submit_sbc-1", sync, submission_state(1)
+        )
+        self.assertEqual(reconciled["progress"]["outcome"], "success")
+        self.assertEqual(reconciled["progress"]["counter_delta"], 1)
+        self.assertEqual(
+            reconciled["progress"]["removed_item_ids"],
+            sorted(self.solution["item_ids"]),
+        )
+        self.assertEqual(reconciled["action_status"], "complete")
+        solution = self.runtime.get_sbc_solution(self.solution["solution_id"])
+        self.assertEqual(solution["status"], "submitted")
+        with self.runtime.connect() as connection:
+            action = connection.execute(
+                "SELECT status, error_code FROM actions WHERE action_id = 'submit_sbc-1'"
+            ).fetchone()
+            batch = connection.execute(
+                "SELECT status FROM action_batches WHERE batch_id = 'reconcile-success'"
+            ).fetchone()
+        self.assertEqual(action["status"], "complete")
+        self.assertIsNone(action["error_code"])
+        self.assertEqual(batch["status"], "complete")
+        target = self.runtime.sbc_submit_reconciliation_target("submit_sbc-1")
+        self.assertTrue(target["resolved"])
+        self.assertEqual(target["result"], reconciled)
+
+    def test_reconcile_repeatable_submit_not_applied_allows_new_confirmed_submit(self):
+        self.submit_timeout("BRIDGE_TIMEOUT", "reconcile-not-applied")
+        item_ids = self.solution["item_ids"]
+        sync = self.complete_sync(present_item_ids=item_ids)
+        reconciled = self.runtime.reconcile_sbc_submit_action(
+            "submit_sbc-1",
+            sync,
+            submission_state(0, status="IN_PROGRESS"),
+            browser_challenge(item_ids),
+        )
+        self.assertEqual(reconciled["progress"]["outcome"], "not_applied")
+        self.assertEqual(
+            reconciled["error_code"], "SBC_SUBMIT_CONFIRMED_NOT_APPLIED"
+        )
+        solution = self.runtime.get_sbc_solution(self.solution["solution_id"])
+        self.assertEqual(solution["status"], "saved")
+        self.assertEqual(solution["validation"]["execution"]["saved_at_sync_id"], 2)
+        self.runtime.require_new_sbc_submit_attempt(self.solution["solution_id"])
+        audit = self.runtime.require_completed_sbc_save(
+            self.solution["solution_id"], 2, "4", "16", item_ids
+        )
+        self.assertEqual(audit["source"], "confirmed_not_applied_submit")
+
+    def test_reconcile_repeatable_submit_partial_consumption_stays_unknown(self):
+        self.submit_timeout("BRIDGE_TIMEOUT", "reconcile-partial")
+        item_ids = self.solution["item_ids"]
+        sync = self.complete_sync(present_item_ids=[item_ids[-1]])
+        reconciled = self.runtime.reconcile_sbc_submit_action(
+            "submit_sbc-1", sync, submission_state(1)
+        )
+        self.assertEqual(reconciled["progress"]["outcome"], "unknown")
+        self.assertEqual(reconciled["error_code"], "SBC_SUBMIT_STILL_UNKNOWN")
+        solution = self.runtime.get_sbc_solution(self.solution["solution_id"])
+        self.assertEqual(solution["status"], "saved")
+        with self.assertRaisesRegex(FC27Error, "unresolved submit action"):
+            self.runtime.require_new_sbc_submit_attempt(
+                self.solution["solution_id"]
+            )
+
+    def test_reconcile_repeatable_submit_rejects_counter_jump(self):
+        self.submit_timeout("BRIDGE_TIMEOUT", "reconcile-counter-jump")
+        sync = self.complete_sync(present_item_ids=[])
+        reconciled = self.runtime.reconcile_sbc_submit_action(
+            "submit_sbc-1", sync, submission_state(2)
+        )
+        self.assertEqual(reconciled["progress"]["outcome"], "unknown")
+        self.assertEqual(reconciled["progress"]["counter_delta"], 2)
+        self.assertEqual(reconciled["error_code"], "SBC_SUBMIT_STILL_UNKNOWN")
+
+    def test_repeatable_counter_conflict_stays_unknown(self):
+        item_ids = self.solution["item_ids"]
+        post_submit = submission_state(1)
+        post_submit["set"]["times_completed"] = 0
+        progress = self.runtime._classify_sbc_submit_outcome(
+            browser_challenge(item_ids), post_submit, item_ids, []
+        )
+        self.assertEqual(progress["outcome"], "unknown")
+        self.assertFalse(progress["counter_consistent"])
+        self.assertIsNone(progress["counter_delta"])
+
+    def test_repeatable_one_sided_counter_stays_unknown(self):
+        item_ids = self.solution["item_ids"]
+        post_submit = submission_state(1)
+        post_submit["challenge"]["times_completed"] = None
+        progress = self.runtime._classify_sbc_submit_outcome(
+            browser_challenge(item_ids), post_submit, item_ids, []
+        )
+        self.assertEqual(progress["outcome"], "unknown")
+        self.assertFalse(progress["counter_consistent"])
+        self.assertEqual(
+            progress["incomplete_counter_sources"],
+            ["challenge.times_completed"],
+        )
+        self.assertIsNone(progress["counter_delta"])
+
+    def test_reconcile_repeatable_submit_all_absent_without_progress_stays_unknown(self):
+        self.submit_timeout("BRIDGE_TIMEOUT", "reconcile-no-progress")
+        sync = self.complete_sync(present_item_ids=[])
+        reconciled = self.runtime.reconcile_sbc_submit_action(
+            "submit_sbc-1", sync, submission_state(0)
+        )
+        self.assertEqual(reconciled["progress"]["outcome"], "unknown")
+        self.assertEqual(reconciled["progress"]["counter_delta"], 0)
+        self.assertEqual(reconciled["error_code"], "SBC_SUBMIT_STILL_UNKNOWN")
+
+    def test_nonrepeatable_submit_uses_completed_transition_and_item_absence(self):
+        item_ids = self.solution["item_ids"]
+        pre_submit = browser_challenge(item_ids)
+        pre_submit["set"]["repeatable"] = False
+        pre_submit["challenge"]["repeatable"] = False
+        pre_submit["set"]["times_completed"] = None
+        pre_submit["challenge"]["times_completed"] = None
+        post_submit = submission_state(0, completed=True)
+        post_submit["set"]["repeatable"] = False
+        post_submit["challenge"]["repeatable"] = False
+        post_submit["set"]["times_completed"] = None
+        post_submit["challenge"]["times_completed"] = None
+        progress = self.runtime._classify_sbc_submit_outcome(
+            pre_submit, post_submit, item_ids, []
+        )
+        self.assertEqual(progress["outcome"], "success")
+        self.assertFalse(progress["repeatable"])
 
     def test_save_acknowledged_readback_failure_is_reconcilable_without_resave(self):
         item_ids = self.solution["item_ids"]
@@ -648,6 +1062,19 @@ class SbcActionTest(unittest.TestCase):
         )
         with self.assertRaisesRegex(FC27Error, "ambiguous or pending"):
             self.runtime.sbc_save_reconciliation_target("save-wrong-error")
+
+        self.insert_failed_save(
+            "submit-reconcile-wrong-type",
+            "submit-reconcile-wrong-type-batch",
+            action_type="move_item",
+            action_status="complete",
+            error_code=None,
+            batch_status="complete",
+        )
+        with self.assertRaisesRegex(FC27Error, "not an SBC submit action"):
+            self.runtime.sbc_submit_reconciliation_target(
+                "submit-reconcile-wrong-type"
+            )
 
     def test_reconcile_rejects_solution_challenge_mismatch(self):
         self.insert_failed_save("save-wrong-challenge", "save-wrong-challenge-batch")

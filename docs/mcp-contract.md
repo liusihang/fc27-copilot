@@ -122,6 +122,10 @@ Supported action types are introduced only after their own acceptance Issues: `b
 
 Checks the FUT.GG manifest and rebuilds the catalog when requested or due. Replacement occurs only after complete validation. The tool returns old/new snapshot identity and validation counts.
 
+## Operator-only daemon RPCs
+
+Save and submit reconciliation are narrow localhost daemon RPCs, not additional MCP tools. `reconcile_sbc_save`, `verify_sbc_save`, and `reconcile_sbc_submit` accept only the original `action_id`. The daemon derives all targets and performs its own browser reads under the execution lock. Caller-provided set IDs, challenge IDs, item IDs, sync IDs, or evidence are ignored.
+
 ## Error catalog
 
 | Code | Meaning | Recovery |
@@ -144,6 +148,11 @@ Checks the FUT.GG manifest and rebuilds the catalog when requested or due. Repla
 | `TRADE_NOT_FOUND` | Exact market trade is no longer available. | Search again and choose a current trade ID. |
 | `SBC_SCHEMA_UNSUPPORTED` | Captured requirement type is not normalized. | Inspect raw evidence and implement that requirement before solving. |
 | `SBC_NOT_ELIGIBLE` | Saved squad fails local or EA validation. | Inspect failed constraints and rebuild the squad. |
+| `SBC_SUBMIT_ALREADY_ATTEMPTED` | The solution already has an active, completed, or unresolved submit. | Replay or reconcile the original action ID. |
+| `SBC_SUBMIT_OUTCOME_UNKNOWN` | The submit write timed out before its outcome was known. | Reconcile the original action; never submit a new batch. |
+| `SBC_SUBMIT_READBACK_PENDING` | EA acknowledged submit but full sync or challenge readback is incomplete. | Reconcile the original action through fresh read-only evidence. |
+| `SBC_SUBMIT_CONFIRMED_NOT_APPLIED` | Fresh evidence proves the submit did not apply. | Review the refreshed saved squad, then create a separately confirmed batch if desired. |
+| `SBC_SUBMIT_STILL_UNKNOWN` | Fresh evidence remains incomplete or contradictory. | Keep submit disabled and reconcile the same action later. |
 
 ## Tool-selection rule
 
