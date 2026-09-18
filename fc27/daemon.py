@@ -11,6 +11,7 @@ from .bridge import BrowserBridge
 from .catalog import CatalogDB
 from .errors import FC27Error
 from .mcp import MCPServer
+from .runtime import RuntimeManager
 
 
 MAX_REQUEST_BYTES = 1024 * 1024
@@ -21,10 +22,13 @@ def utc_now():
 
 
 class FC27Daemon:
-    def __init__(self, catalog_path, web_root, bridge=None):
+    def __init__(self, catalog_path, web_root, bridge=None, accounts_root=None):
         self.catalog = CatalogDB(catalog_path)
         self.web_root = Path(web_root)
         self.bridge = bridge or BrowserBridge()
+        self.accounts = RuntimeManager(
+            accounts_root or Path(catalog_path).resolve().parent / "accounts"
+        )
         self.mcp = MCPServer(self)
         self._catalog_refresh_lock = threading.Lock()
 
@@ -36,6 +40,7 @@ class FC27Daemon:
             "catalog": catalog_validation,
             "catalog_meta": self.catalog.metadata(),
             "browser_bridge": self.bridge.health(),
+            "account": self.accounts.status(),
         }
 
     def rpc(self, request):
@@ -69,6 +74,9 @@ class FC27Daemon:
             if name == "catalog_refresh":
                 return self._envelope("futgg", self._refresh_catalog())
             if name == "club_query":
+                account = self.accounts.status()
+                if account:
+                    return self._envelope("runtime", {"account": account, "items": [], "count": 0})
                 raise FC27Error(
                     "ACCOUNT_NOT_INITIALIZED",
                     "No EA Persona runtime database has been selected yet.",
@@ -83,9 +91,11 @@ class FC27Daemon:
                         retryable=True,
                         recovery="Start fc27d, connect the extension at http://127.0.0.1:3926, log in to FC27, then retry.",
                     )
+                identity = self._browser_tool("getIdentity", {})
+                account = self.accounts.activate(identity)
                 raise FC27Error(
                     "ACCOUNT_SYNC_NOT_READY",
-                    "Club synchronization is implemented in Milestone M3 after authenticated endpoint acceptance.",
+                    f"Persona {account['persona_id']} is selected; inventory synchronization is implemented in the next M3 issues.",
                     retryable=False,
                     recovery="Complete the read-only browser acceptance before enabling account synchronization.",
                 )

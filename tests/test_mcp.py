@@ -8,6 +8,24 @@ from fc27.mcp import TOOLS
 from fc27.schema import CATALOG_SCHEMA
 
 
+class IdentityBridge:
+    def health(self):
+        return {"connected": True, "queued_requests": 0, "pending_requests": 0}
+
+    def call(self, method, params):
+        if method != "getIdentity":
+            raise AssertionError(method)
+        return {
+            "ok": True,
+            "data": {
+                "persona_id": "persona-123",
+                "platform": "ps5",
+                "club_id": 10,
+                "club_name": "Fixture Club",
+            },
+        }
+
+
 class MCPTest(unittest.TestCase):
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
@@ -52,6 +70,14 @@ class MCPTest(unittest.TestCase):
         self.assertEqual(sync["error"]["code"], "EA_SESSION_REQUIRED")
         self.assertIn("recovery", sync["error"])
         self.assertEqual(execute["error"]["code"], "EXECUTION_DISABLED")
+
+    def test_sync_selects_persona_before_inventory_stage(self):
+        self.daemon.bridge = IdentityBridge()
+        result = self.daemon.call_tool("sync_club", {})
+        self.assertEqual(result["error"]["code"], "ACCOUNT_SYNC_NOT_READY")
+        account = self.daemon.accounts.status()
+        self.assertEqual(account["persona_id"], "persona-123")
+        self.assertEqual(account["club_name"], "Fixture Club")
 
 
 if __name__ == "__main__":
