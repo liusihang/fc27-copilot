@@ -12,6 +12,7 @@ from .account import AccountReader
 from .catalog import CatalogDB
 from .errors import FC27Error
 from .mcp import MCPServer
+from .market import MarketService
 from .runtime import RuntimeManager
 
 
@@ -185,11 +186,30 @@ class FC27Daemon:
                     params = {}
                 return self._envelope("ea_webapp", self._browser_tool(method, params))
             if name == "price_context":
-                raise FC27Error(
-                    "PRICE_CONTEXT_NOT_READY",
-                    "Reference price persistence is scheduled for Milestone M4.",
-                    recovery="Use FC27:catalog_query for card facts until price_context is implemented.",
+                if not self.accounts.active:
+                    raise FC27Error(
+                        "ACCOUNT_NOT_INITIALIZED",
+                        "No EA Persona runtime database has been selected yet.",
+                        retryable=True,
+                        recovery="Run FC27:sync_club after login, then retry price_context.",
+                    )
+                data = MarketService(self.accounts.active).price_context(
+                    arguments.get("card_ea_ids") or [],
+                    arguments.get("history_hours", 72),
                 )
+                catalog = self.catalog.query(
+                    {
+                        "card_ea_ids": arguments.get("card_ea_ids") or [],
+                        "limit": len(arguments.get("card_ea_ids") or []) or 1,
+                        "detail": "summary",
+                    }
+                )
+                catalog_by_id = {
+                    card["card_ea_id"]: card for card in catalog["cards"]
+                }
+                for card in data["cards"]:
+                    card["catalog"] = catalog_by_id.get(card["card_ea_id"])
+                return self._envelope("futgg", data)
             if name == "sbc_solve":
                 raise FC27Error(
                     "SBC_SCHEMA_UNSUPPORTED",

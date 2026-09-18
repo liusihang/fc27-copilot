@@ -76,6 +76,18 @@ class RuntimeDB:
         result["runtime_path"] = str(self.path)
         return result
 
+    def validate_existing(self):
+        with self.connect() as connection:
+            self._validate_schema(connection)
+            rows = connection.execute("SELECT persona_id FROM account_state").fetchall()
+        if len(rows) != 1 or str(rows[0][0]) != self.persona_id:
+            raise FC27Error(
+                "ACCOUNT_MISMATCH",
+                f"Runtime database is not bound to Persona {self.persona_id}.",
+                recovery="Inspect the account directory and account_state row before using it.",
+            )
+        return self.account_summary()
+
     def begin_sync(self, kind="login_full"):
         with self.connect() as connection:
             cursor = connection.execute(
@@ -336,6 +348,87 @@ class RuntimeDB:
             "next_cursor": str(offset + limit) if has_more else None,
         }
 
+    def record_reference_prices(self, rows):
+        inserted = 0
+        unchanged = 0
+        with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            for row in rows:
+                latest = connection.execute(
+                    """SELECT price, status FROM reference_prices
+                       WHERE card_ea_id = ? AND platform = ?
+                       ORDER BY observed_at DESC LIMIT 1""",
+                    (row["card_ea_id"], row["platform"]),
+                ).fetchone()
+                if latest and latest["price"] == row["price"] and latest["status"] == row["status"]:
+                    unchanged += 1
+                    continue
+                connection.execute(
+                    """INSERT INTO reference_prices(
+                         card_ea_id, platform, observed_at, price, status
+                       ) VALUES (?, ?, ?, ?, ?)""",
+                    (
+                        row["card_ea_id"],
+                        row["platform"],
+                        row["observed_at"],
+                        row["price"],
+                        row["status"],
+                    ),
+                )
+                inserted += 1
+            connection.commit()
+        return {"inserted": inserted, "unchanged": unchanged}
+
+    def price_facts(self, card_ea_ids, history_since):
+        card_ea_ids = [int(value) for value in card_ea_ids]
+        placeholders = ",".join("?" for _ in card_ea_ids)
+        with self.connect() as connection:
+            history_rows = [
+                dict(row)
+                for row in connection.execute(
+                    f"""SELECT card_ea_id, platform, observed_at, price, status
+                        FROM reference_prices
+                        WHERE card_ea_id IN ({placeholders}) AND observed_at >= ?
+                        ORDER BY card_ea_id, observed_at DESC, platform""",
+                    [*card_ea_ids, history_since],
+                )
+            ]
+            holding_rows = [
+                dict(row)
+                for row in connection.execute(
+                    f"""SELECT item_id, card_ea_id, location, tradeable,
+                               acquisition_cost, last_seen_at
+                        FROM club_items
+                        WHERE card_ea_id IN ({placeholders})
+                        ORDER BY card_ea_id, last_seen_at DESC, item_id""",
+                    card_ea_ids,
+                )
+            ]
+            active_listing_counts = {
+                int(row["card_ea_id"]): int(row["listing_count"])
+                for row in connection.execute(
+                    f"""SELECT ci.card_ea_id, COUNT(DISTINCT tl.trade_id) AS listing_count
+                        FROM club_items ci
+                        JOIN trade_listings tl ON tl.item_id = ci.item_id
+                        WHERE ci.card_ea_id IN ({placeholders})
+                          AND LOWER(tl.status) NOT IN ('expired', 'closed', 'sold', 'inactive')
+                        GROUP BY ci.card_ea_id""",
+                    card_ea_ids,
+                )
+            }
+        history = {card_ea_id: [] for card_ea_id in card_ea_ids}
+        for row in history_rows:
+            history[row["card_ea_id"]].append(row)
+        holdings = {card_ea_id: [] for card_ea_id in card_ea_ids}
+        for row in holding_rows:
+            row["tradeable"] = bool(row["tradeable"])
+            holdings[row["card_ea_id"]].append(row)
+        return {
+            "history": history,
+            "holdings": holdings,
+            "active_listing_counts": active_listing_counts,
+        }
+
     def _validate_schema(self, connection):
         try:
             version = connection.execute(
@@ -359,6 +452,11 @@ class RuntimeManager:
     def __init__(self, accounts_root):
         self.accounts_root = Path(accounts_root)
         self.active = None
+        candidates = sorted(self.accounts_root.glob("*/runtime.sqlite"))
+        if len(candidates) == 1:
+            runtime = RuntimeDB(candidates[0], candidates[0].parent.name)
+            runtime.validate_existing()
+            self.active = runtime
 
     def activate(self, identity):
         persona_id = str(identity.get("persona_id") or "")

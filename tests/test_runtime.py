@@ -35,6 +35,19 @@ class RuntimeManagerTest(unittest.TestCase):
         )
         self.assertEqual(summary["club_name"], "New")
 
+    def test_restores_the_only_existing_persona(self):
+        self.manager.activate(
+            {"persona_id": "123", "platform": "pc", "club_id": 10, "club_name": "Club"}
+        )
+        restored = RuntimeManager(Path(self.directory.name) / "accounts")
+        self.assertEqual(restored.status()["persona_id"], "123")
+
+    def test_does_not_guess_when_multiple_personas_exist(self):
+        self.manager.activate({"persona_id": "123", "platform": "pc"})
+        self.manager.activate({"persona_id": "456", "platform": "ps5"})
+        restored = RuntimeManager(Path(self.directory.name) / "accounts")
+        self.assertIsNone(restored.status())
+
     def test_rejects_path_like_persona_id(self):
         with self.assertRaises(FC27Error) as context:
             self.manager.activate({"persona_id": "../other", "platform": "ps5"})
