@@ -587,6 +587,373 @@ class RuntimeDB:
             connection.commit()
         return reconciled
 
+    def sbc_save_reconciliation_target(self, action_id):
+        with self.connect() as connection:
+            state = self._sbc_save_reconciliation_state(connection, action_id)
+        return {
+            "action_id": action_id,
+            "set_id": state["params"]["set_id"],
+            "challenge_id": state["params"]["challenge_id"],
+            "solution_id": state["params"]["solution_id"],
+            "expected_sync_id": state["batch"]["expected_sync_id"],
+        }
+
+    def sbc_save_verification_target(self, action_id):
+        with self.connect() as connection:
+            state = self._sbc_saved_verification_state(connection, action_id)
+        return {
+            "action_id": action_id,
+            "set_id": state["params"]["set_id"],
+            "challenge_id": state["params"]["challenge_id"],
+            "solution_id": state["params"]["solution_id"],
+            "expected_sync_id": state["batch"]["expected_sync_id"],
+        }
+
+    def verify_sbc_saved_action(self, action_id, response):
+        saved_item_ids = self._require_trusted_sbc_readback(response)
+        with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            state = self._sbc_saved_verification_state(connection, action_id)
+            action = state["action"]
+            batch = state["batch"]
+            solution = state["solution"]
+            params = state["params"]
+            expected_item_ids = [int(value) for value in params["item_ids"]]
+            if saved_item_ids != expected_item_ids:
+                connection.rollback()
+                raise FC27Error(
+                    "SBC_SAVE_READBACK_FAILED",
+                    "Fresh EA SBC verification does not preserve the exact confirmed item order.",
+                    details={
+                        "saved_item_ids": saved_item_ids,
+                        "expected_item_ids": expected_item_ids,
+                    },
+                )
+            challenge = response.get("challenge") or {}
+            set_value = response.get("set") or {}
+            if (
+                str(challenge.get("id")) != str(params["challenge_id"])
+                or str(set_value.get("id")) != str(params["set_id"])
+            ):
+                connection.rollback()
+                raise FC27Error(
+                    "SBC_SAVE_READBACK_FAILED",
+                    "Fresh EA SBC verification returned a different set or challenge.",
+                )
+            solution_item_ids = [
+                int(row["item_id"])
+                for row in connection.execute(
+                    """SELECT item_id FROM sbc_solution_items
+                       WHERE solution_id = ? ORDER BY slot_index""",
+                    (params["solution_id"],),
+                )
+            ]
+            if solution_item_ids != expected_item_ids:
+                connection.rollback()
+                raise FC27Error(
+                    "SBC_SAVE_READBACK_FAILED",
+                    "The persisted SBC solution no longer matches the completed save action.",
+                )
+            evidence = {
+                "saved_at_sync_id": int(batch["expected_sync_id"]),
+                "saved_item_ids": saved_item_ids,
+                "ea_eligible": True,
+                "verified": True,
+                "source": "ea_webapp_fresh",
+                "ea": response,
+            }
+            original_result = (
+                json.loads(action["result_json"])
+                if action["result_json"] is not None
+                else None
+            )
+            result = {**evidence, "original_result": original_result}
+            finished_at = utc_now()
+            action_update = connection.execute(
+                """UPDATE actions SET result_json = ?, finished_at = ?
+                   WHERE action_id = ? AND status = 'complete'""",
+                (
+                    json.dumps(result, ensure_ascii=False, separators=(",", ":"), sort_keys=True),
+                    finished_at,
+                    action_id,
+                ),
+            )
+            validation = json.loads(solution["validation_json"])
+            validation["execution"] = evidence
+            solution_update = connection.execute(
+                """UPDATE sbc_solutions SET validation_json = ?
+                   WHERE solution_id = ? AND status = 'saved'""",
+                (
+                    json.dumps(validation, ensure_ascii=False, separators=(",", ":"), sort_keys=True),
+                    params["solution_id"],
+                ),
+            )
+            if action_update.rowcount != 1 or solution_update.rowcount != 1:
+                connection.rollback()
+                raise FC27Error(
+                    "SBC_SAVE_VERIFICATION_CONFLICT",
+                    "The completed SBC save action or solution changed during verification.",
+                )
+            connection.commit()
+        return result
+
+    def reconcile_sbc_save_action(self, action_id, response):
+        saved_item_ids = self._require_trusted_sbc_readback(response)
+
+        with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            state = self._sbc_save_reconciliation_state(connection, action_id)
+            action = state["action"]
+            batch = state["batch"]
+            solution = state["solution"]
+            params = state["params"]
+            expected_item_ids = [int(value) for value in params["item_ids"]]
+            if saved_item_ids != expected_item_ids:
+                connection.rollback()
+                raise FC27Error(
+                    "SBC_SAVE_READBACK_FAILED",
+                    "Fresh EA SBC readback does not preserve the exact confirmed item order.",
+                    details={
+                        "saved_item_ids": saved_item_ids,
+                        "expected_item_ids": expected_item_ids,
+                    },
+                )
+            challenge = response.get("challenge") or {}
+            set_value = response.get("set") or {}
+            if (
+                str(challenge.get("id")) != str(params["challenge_id"])
+                or str(set_value.get("id")) != str(params["set_id"])
+            ):
+                connection.rollback()
+                raise FC27Error(
+                    "SBC_SAVE_READBACK_FAILED",
+                    "Fresh EA SBC readback returned a different set or challenge.",
+                )
+            solution_item_ids = [
+                int(row["item_id"])
+                for row in connection.execute(
+                    """SELECT item_id FROM sbc_solution_items
+                       WHERE solution_id = ? ORDER BY slot_index""",
+                    (params["solution_id"],),
+                )
+            ]
+            if solution_item_ids != expected_item_ids:
+                connection.rollback()
+                raise FC27Error(
+                    "SBC_SAVE_READBACK_FAILED",
+                    "The persisted SBC solution no longer matches the failed action.",
+                )
+            evidence = {
+                "saved_at_sync_id": int(batch["expected_sync_id"]),
+                "saved_item_ids": saved_item_ids,
+                "ea_eligible": True,
+                "reconciled": True,
+                "source": "ea_webapp_fresh",
+                "ea": response,
+            }
+            result = {"reconciled": True, **evidence}
+            finished_at = utc_now()
+            action_update = connection.execute(
+                """UPDATE actions SET status = 'complete', finished_at = ?,
+                     error_code = NULL, error_message = NULL, result_json = ?
+                   WHERE action_id = ? AND status = 'failed'
+                     AND error_code IN (
+                       'BRIDGE_TIMEOUT',
+                       'SBC_SAVE_OUTCOME_UNKNOWN',
+                       'SBC_SAVE_READBACK_PENDING'
+                     )""",
+                (
+                    finished_at,
+                    json.dumps(result, ensure_ascii=False, separators=(",", ":"), sort_keys=True),
+                    action_id,
+                ),
+            )
+            validation = json.loads(solution["validation_json"])
+            validation["execution"] = evidence
+            solution_update = connection.execute(
+                """UPDATE sbc_solutions SET status = 'saved', validation_json = ?
+                   WHERE solution_id = ? AND status = 'validated'""",
+                (
+                    json.dumps(validation, ensure_ascii=False, separators=(",", ":"), sort_keys=True),
+                    params["solution_id"],
+                ),
+            )
+            if action_update.rowcount != 1 or solution_update.rowcount != 1:
+                connection.rollback()
+                raise FC27Error(
+                    "SBC_SAVE_RECONCILIATION_CONFLICT",
+                    "The SBC save action or solution changed during reconciliation.",
+                )
+            statuses = [
+                row["status"]
+                for row in connection.execute(
+                    "SELECT status FROM actions WHERE batch_id = ?",
+                    (action["batch_id"],),
+                )
+            ]
+            if statuses and all(status == "complete" for status in statuses):
+                batch_status = "complete"
+            elif any(status == "complete" for status in statuses):
+                batch_status = "partial"
+            elif any(status == "failed" for status in statuses):
+                batch_status = "failed"
+            else:
+                batch_status = "running"
+            connection.execute(
+                "UPDATE action_batches SET status = ?, finished_at = ? WHERE batch_id = ?",
+                (
+                    batch_status,
+                    finished_at if batch_status in ("complete", "partial", "failed") else None,
+                    action["batch_id"],
+                ),
+            )
+            connection.commit()
+        return result
+
+    @staticmethod
+    def _require_trusted_sbc_readback(response):
+        saved_item_ids = [int(value) for value in response.get("saved_item_ids") or []]
+        squad = response.get("squad") or {}
+        eligibility = squad.get("eligibility_evidence") or {}
+        freshness = response.get("freshness") or {}
+        requirements = eligibility.get("requirements") or []
+        trusted_readback = (
+            response.get("source") == "ea_webapp_fresh"
+            and freshness.get("sets_requested") is True
+            and freshness.get("challenges_requested") is True
+            and freshness.get("challenge_loaded") is True
+            and squad.get("eligible") is True
+            and eligibility.get("source") == "ea_challenge_requirements"
+            and eligibility.get("identity_match") is True
+            and eligibility.get("all_requirements_met") is True
+            and eligibility.get("submit_available") is True
+            and bool(requirements)
+            and all(value.get("met") is True for value in requirements)
+        )
+        if not trusted_readback:
+            raise FC27Error(
+                "SBC_SAVE_READBACK_FAILED",
+                "SBC save verification requires a fresh trusted EA readback with complete positive eligibility evidence.",
+                details={"source": response.get("source"), "eligibility": eligibility},
+            )
+        return saved_item_ids
+
+    def _sbc_save_reconciliation_state(self, connection, action_id):
+        action = connection.execute(
+            "SELECT * FROM actions WHERE action_id = ?", (action_id,)
+        ).fetchone()
+        if action is None:
+            raise FC27Error("ACTION_NOT_FOUND", f"Action {action_id} was not found.")
+        if action["action_type"] != "save_sbc_squad":
+            raise FC27Error("INVALID_ACTION", f"Action {action_id} is not an SBC save action.")
+        if action["status"] != "failed" or action["error_code"] not in (
+            "BRIDGE_TIMEOUT",
+            "SBC_SAVE_OUTCOME_UNKNOWN",
+            "SBC_SAVE_READBACK_PENDING",
+        ):
+            raise FC27Error(
+                "SBC_SAVE_RECONCILIATION_NOT_ALLOWED",
+                "Only an ambiguous or pending SBC save readback can be reconciled.",
+            )
+        batch = connection.execute(
+            "SELECT * FROM action_batches WHERE batch_id = ?", (action["batch_id"],)
+        ).fetchone()
+        if batch is None or batch["status"] not in ("failed", "partial"):
+            raise FC27Error(
+                "SBC_SAVE_RECONCILIATION_NOT_ALLOWED",
+                "The containing action batch is not in a failed or partial state.",
+            )
+        params = json.loads(action["params_json"])
+        solution = connection.execute(
+            "SELECT * FROM sbc_solutions WHERE solution_id = ?",
+            (params["solution_id"],),
+        ).fetchone()
+        if solution is None:
+            raise FC27Error(
+                "SBC_SOLUTION_NOT_FOUND",
+                f"SBC solution {params['solution_id']} was not found.",
+            )
+        if str(solution["challenge_id"]) != str(params["challenge_id"]):
+            raise FC27Error(
+                "SBC_SAVE_RECONCILIATION_NOT_ALLOWED",
+                "The failed action challenge does not match its persisted solution.",
+            )
+        if solution["status"] != "validated":
+            raise FC27Error(
+                "SBC_SAVE_RECONCILIATION_NOT_ALLOWED",
+                f"SBC solution status {solution['status']} cannot transition to saved.",
+            )
+        current_sync_id = connection.execute(
+            "SELECT last_full_sync_id FROM account_state WHERE persona_id = ?",
+            (self.persona_id,),
+        ).fetchone()[0]
+        if current_sync_id != batch["expected_sync_id"]:
+            raise FC27Error(
+                "STALE_CLUB_STATE",
+                f"Failed save expected sync {batch['expected_sync_id']}, current complete sync is {current_sync_id}.",
+                recovery="Regenerate and save a new SBC solution against the current complete sync.",
+            )
+        return {
+            "action": action,
+            "batch": batch,
+            "solution": solution,
+            "params": params,
+        }
+
+    def _sbc_saved_verification_state(self, connection, action_id):
+        action = connection.execute(
+            "SELECT * FROM actions WHERE action_id = ?", (action_id,)
+        ).fetchone()
+        if action is None:
+            raise FC27Error("ACTION_NOT_FOUND", f"Action {action_id} was not found.")
+        if action["action_type"] != "save_sbc_squad" or action["status"] != "complete":
+            raise FC27Error(
+                "SBC_SAVE_VERIFICATION_NOT_ALLOWED",
+                "Fresh verification requires a completed SBC save action.",
+            )
+        batch = connection.execute(
+            "SELECT * FROM action_batches WHERE batch_id = ?", (action["batch_id"],)
+        ).fetchone()
+        if batch is None or batch["status"] not in ("complete", "partial"):
+            raise FC27Error(
+                "SBC_SAVE_VERIFICATION_NOT_ALLOWED",
+                "The containing action batch is not complete or partial.",
+            )
+        params = json.loads(action["params_json"])
+        solution = connection.execute(
+            "SELECT * FROM sbc_solutions WHERE solution_id = ?",
+            (params["solution_id"],),
+        ).fetchone()
+        if solution is None:
+            raise FC27Error(
+                "SBC_SOLUTION_NOT_FOUND",
+                f"SBC solution {params['solution_id']} was not found.",
+            )
+        if (
+            str(solution["challenge_id"]) != str(params["challenge_id"])
+            or solution["status"] != "saved"
+        ):
+            raise FC27Error(
+                "SBC_SAVE_VERIFICATION_NOT_ALLOWED",
+                "The completed action does not reference the expected saved solution.",
+            )
+        current_sync_id = connection.execute(
+            "SELECT last_full_sync_id FROM account_state WHERE persona_id = ?",
+            (self.persona_id,),
+        ).fetchone()[0]
+        if current_sync_id != batch["expected_sync_id"]:
+            raise FC27Error(
+                "STALE_CLUB_STATE",
+                f"Saved action expected sync {batch['expected_sync_id']}, current complete sync is {current_sync_id}.",
+                recovery="Regenerate and save a new SBC solution against the current complete sync.",
+            )
+        return {
+            "action": action,
+            "batch": batch,
+            "solution": solution,
+            "params": params,
+        }
+
     def upsert_sbc_sets(self, sets):
         with self.connect() as connection:
             for value in sets:
@@ -806,6 +1173,141 @@ class RuntimeDB:
         result["item_ids"] = [int(value["item_id"]) for value in items]
         result["slots"] = [dict(value) for value in items]
         return result
+
+    def require_new_sbc_save_attempt(self, solution_id):
+        with self.connect() as connection:
+            solution = connection.execute(
+                "SELECT status FROM sbc_solutions WHERE solution_id = ?",
+                (solution_id,),
+            ).fetchone()
+            if solution is None:
+                raise FC27Error(
+                    "SBC_SOLUTION_NOT_FOUND", f"SBC solution {solution_id} was not found."
+                )
+            if solution["status"] != "validated":
+                raise FC27Error(
+                    "SBC_SAVE_STATE_CONFLICT",
+                    f"SBC solution status {solution['status']} cannot start a new save.",
+                    recovery="Use the recorded saved action or generate a new solution.",
+                )
+            prior = connection.execute(
+                """SELECT action_id, status, error_code FROM actions
+                   WHERE action_type = 'save_sbc_squad'
+                     AND json_extract(params_json, '$.solution_id') = ?
+                     AND (
+                       status IN ('pending', 'running', 'complete')
+                       OR error_code IN (
+                         'BRIDGE_TIMEOUT',
+                         'SBC_SAVE_OUTCOME_UNKNOWN',
+                         'SBC_SAVE_READBACK_PENDING'
+                       )
+                     )
+                   ORDER BY sequence_no DESC LIMIT 1""",
+                (solution_id,),
+            ).fetchone()
+        if prior is not None:
+            raise FC27Error(
+                "SBC_SAVE_ALREADY_ATTEMPTED",
+                "This SBC solution already has an active, completed, or ambiguous save action.",
+                recovery="Replay the original batch or reconcile its original action_id. Do not send another save.",
+                details={
+                    "action_id": prior["action_id"],
+                    "status": prior["status"],
+                    "error_code": prior["error_code"],
+                },
+            )
+
+    def require_completed_sbc_save(
+        self, solution_id, expected_sync_id, set_id, challenge_id, item_ids
+    ):
+        expected_item_ids = [int(value) for value in item_ids]
+        with self.connect() as connection:
+            rows = connection.execute(
+                """SELECT a.action_id, a.params_json, a.result_json,
+                          b.batch_id, b.expected_sync_id
+                   FROM actions AS a
+                   JOIN action_batches AS b ON b.batch_id = a.batch_id
+                   WHERE a.action_type = 'save_sbc_squad'
+                     AND a.status = 'complete'
+                     AND b.status = 'complete'
+                     AND json_extract(a.params_json, '$.solution_id') = ?
+                   ORDER BY a.finished_at DESC""",
+                (solution_id,),
+            ).fetchall()
+        for row in rows:
+            params = json.loads(row["params_json"])
+            result = json.loads(row["result_json"]) if row["result_json"] else {}
+            if (
+                int(row["expected_sync_id"]) != expected_sync_id
+                or str(params.get("set_id")) != str(set_id)
+                or str(params.get("challenge_id")) != str(challenge_id)
+                or [int(value) for value in params.get("item_ids") or []]
+                != expected_item_ids
+                or [int(value) for value in result.get("saved_item_ids") or []]
+                != expected_item_ids
+                or result.get("saved_at_sync_id") != expected_sync_id
+                or result.get("source") != "ea_webapp_fresh"
+            ):
+                continue
+            self._require_trusted_sbc_readback(result.get("ea") or {})
+            return {
+                "action_id": row["action_id"],
+                "batch_id": row["batch_id"],
+            }
+        raise FC27Error(
+            "SBC_SAVE_AUDIT_INCOMPLETE",
+            "SBC submission requires a matching completed save action and completed batch.",
+            recovery="Finish or reconcile the original save audit before submitting.",
+        )
+
+    def mark_sbc_solution_saved(self, solution_id, expected_sync_id, evidence):
+        with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            account = connection.execute(
+                "SELECT last_full_sync_id FROM account_state WHERE persona_id = ?",
+                (self.persona_id,),
+            ).fetchone()
+            current_sync_id = account["last_full_sync_id"] if account else None
+            if current_sync_id != expected_sync_id:
+                connection.rollback()
+                raise FC27Error(
+                    "STALE_CLUB_STATE",
+                    f"Expected sync {expected_sync_id}, current complete sync is {current_sync_id}.",
+                    retryable=True,
+                    recovery="Regenerate and save the SBC solution against the current complete sync.",
+                )
+            row = connection.execute(
+                "SELECT status, validation_json FROM sbc_solutions WHERE solution_id = ?",
+                (solution_id,),
+            ).fetchone()
+            if row is None:
+                connection.rollback()
+                raise FC27Error(
+                    "SBC_SOLUTION_NOT_FOUND", f"SBC solution {solution_id} was not found."
+                )
+            if row["status"] != "validated":
+                connection.rollback()
+                raise FC27Error(
+                    "SBC_SAVE_STATE_CONFLICT",
+                    f"SBC solution status {row['status']} cannot transition to saved.",
+                )
+            validation = json.loads(row["validation_json"])
+            validation["execution"] = evidence
+            updated = connection.execute(
+                """UPDATE sbc_solutions SET status = 'saved', validation_json = ?
+                   WHERE solution_id = ? AND status = 'validated'""",
+                (
+                    json.dumps(validation, ensure_ascii=False, separators=(",", ":"), sort_keys=True),
+                    solution_id,
+                ),
+            )
+            if updated.rowcount != 1:
+                connection.rollback()
+                raise FC27Error(
+                    "SBC_SAVE_STATE_CONFLICT",
+                    "The SBC solution changed during save finalization.",
+                )
+            connection.commit()
 
     def update_sbc_solution_status(self, solution_id, status, evidence):
         with self.connect() as connection:

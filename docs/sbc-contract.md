@@ -49,7 +49,21 @@ Protected items, loan items, Tradepile items, stale/missing items, duplicates, a
 
 ## Save action
 
-`save_sbc_squad` requires `set_id`, `challenge_id`, `solution_id`, and exactly eleven ordered `item_ids`. The action must match the persisted solution and latest complete club synchronization. The page adapter loads the challenge, resolves the exact owned objects, rejects concept or missing items, saves the squad, reloads it through `sbcDAO`, and requires the same item order in readback. It does not submit.
+`save_sbc_squad` requires `set_id`, `challenge_id`, `solution_id`, and exactly eleven ordered `item_ids`. The action must match the persisted solution and latest complete club synchronization. The page adapter loads the challenge, resolves the exact owned objects, rejects concept or missing items, and sends the save. After EA acknowledges the save, the dispatcher issues a separate read-only request that reloads the set list, challenge list, and saved challenge squad through EA services.
+
+The fresh readback contains only the set/challenge identity, current status, formation, rating, chemistry, eleven occupied field slots, and exact item order. Eligibility is evaluated through the reloaded challenge's own `isRequirementMet` results, bound to the active controller's matching set/challenge identity, plus a visible and enabled Submit control within that controller's root view.
+
+The daemon does not expose a generic browser-method RPC. Browser write methods are reachable only through audited action dispatch. A new save is rejected before EA contact when the solution is no longer `validated` or when the same solution already has a pending, running, completed, timed-out, or readback-pending save action. Submission additionally requires a matching completed save action inside a completed batch, with fresh trusted evidence for the same sync, set, challenge, and exact item order.
+
+All save-call timeout sources (`BRIDGE_TIMEOUT`, `PAGE_BRIDGE_TIMEOUT`, and `EA_SERVICE_TIMEOUT`) are normalized to `SBC_SAVE_OUTCOME_UNKNOWN`. That state permits only fresh read-only reconciliation. Public full synchronization and account execution share the same lock, and submit dispatch revalidates the batch's original `expected_sync_id` immediately before contacting EA.
+
+`submit_sbc` remains disabled until Issue #23 adds outcome-unknown handling, duplicate-submit rejection, and read-only challenge/inventory reconciliation for submit timeouts. Live submission also requires separate approval for permanent item consumption.
+
+If the browser bridge times out after EA has already accepted the save, the action is recorded as failed and is not retried. Reconciliation accepts only the original `action_id`; the daemon derives the target from the failed audit row and performs its own fresh EA read. It requires the original batch sync to remain current, the solution to remain `validated`, and the set, challenge, persisted solution, eleven item IDs in order, freshness markers, and positive eligibility evidence to match. The action does not submit.
+
+When EA acknowledges the save but the separate fresh read fails, the action records `SBC_SAVE_READBACK_PENDING` together with the save acknowledgement. The same `action_id` can run only the fresh read reconciliation path; it never calls `saveSbcSquad` again.
+
+A completed saved action can be freshly verified by `action_id`. The daemon performs the same independent EA read and replaces the solution's canonical execution evidence with `ea_webapp_fresh`. Submission requires this source, all three freshness markers, challenge-native positive requirements, matching controller identity, and an available Submit control.
 
 ## Submit action
 

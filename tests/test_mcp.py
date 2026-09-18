@@ -5,6 +5,7 @@ import unittest
 from pathlib import Path
 
 from fc27.daemon import FC27Daemon
+from fc27.errors import FC27Error
 from fc27.mcp import TOOLS
 from fc27.schema import CATALOG_SCHEMA
 
@@ -40,6 +41,16 @@ class IdentityBridge:
         if method not in payloads:
             raise AssertionError(method)
         return {"ok": True, "data": payloads[method]}
+
+
+class ReconciliationBridge:
+    def __init__(self, response):
+        self.response = response
+        self.calls = []
+
+    def call(self, method, params):
+        self.calls.append((method, params))
+        return {"ok": True, "data": self.response}
 
 
 class MCPTest(unittest.TestCase):
@@ -124,6 +135,96 @@ class MCPTest(unittest.TestCase):
         self.assertNotIn("sid", result["data"]["ea_session"])
         self.assertEqual(result["data"]["policy"]["execution_mode"], "observe")
         self.assertFalse(result["data"]["policy"]["account_writes_enabled"])
+
+    def test_rpc_does_not_expose_raw_browser_methods(self):
+        bridge = ReconciliationBridge({"success": True})
+        self.daemon.bridge = bridge
+        with self.assertRaisesRegex(FC27Error, "Unknown daemon RPC method"):
+            self.daemon.rpc(
+                {
+                    "method": "browser_call",
+                    "params": {"method": "submitSbc", "params": {}},
+                }
+            )
+        self.assertEqual(bridge.calls, [])
+
+    def test_sbc_reconciliation_reads_evidence_from_browser(self):
+        self.daemon.accounts.activate(
+            {"persona_id": "persona-123", "platform": "ps5", "club_name": "Fixture Club"}
+        )
+        runtime = self.daemon.accounts.active
+        runtime.sbc_save_reconciliation_target = lambda action_id: {
+            "action_id": action_id,
+            "set_id": "4",
+            "challenge_id": "16",
+            "solution_id": "solution-1",
+            "expected_sync_id": 1,
+        }
+        observed = {}
+
+        def reconcile(action_id, response):
+            observed["action_id"] = action_id
+            observed["response"] = response
+            return {"reconciled": True}
+
+        runtime.reconcile_sbc_save_action = reconcile
+        trusted = {"source": "ea_webapp_fresh"}
+        bridge = ReconciliationBridge(trusted)
+        self.daemon.bridge = bridge
+        result = self.daemon.rpc(
+            {
+                "method": "reconcile_sbc_save",
+                "params": {
+                    "action_id": "save-1",
+                    "response": {"source": "forged"},
+                },
+            }
+        )
+        self.assertEqual(result, {"reconciled": True})
+        self.assertEqual(
+            bridge.calls,
+            [("readSavedSbcSquad", {"set_id": "4", "challenge_id": "16"})],
+        )
+        self.assertEqual(observed, {"action_id": "save-1", "response": trusted})
+
+    def test_sbc_verification_reads_evidence_from_browser(self):
+        self.daemon.accounts.activate(
+            {"persona_id": "persona-123", "platform": "ps5", "club_name": "Fixture Club"}
+        )
+        runtime = self.daemon.accounts.active
+        runtime.sbc_save_verification_target = lambda action_id: {
+            "action_id": action_id,
+            "set_id": "4",
+            "challenge_id": "16",
+            "solution_id": "solution-1",
+            "expected_sync_id": 1,
+        }
+        observed = {}
+
+        def verify(action_id, response):
+            observed["action_id"] = action_id
+            observed["response"] = response
+            return {"verified": True}
+
+        runtime.verify_sbc_saved_action = verify
+        trusted = {"source": "ea_webapp_fresh"}
+        bridge = ReconciliationBridge(trusted)
+        self.daemon.bridge = bridge
+        result = self.daemon.rpc(
+            {
+                "method": "verify_sbc_save",
+                "params": {
+                    "action_id": "save-1",
+                    "response": {"source": "forged"},
+                },
+            }
+        )
+        self.assertEqual(result, {"verified": True})
+        self.assertEqual(
+            bridge.calls,
+            [("readSavedSbcSquad", {"set_id": "4", "challenge_id": "16"})],
+        )
+        self.assertEqual(observed, {"action_id": "save-1", "response": trusted})
 
 
 if __name__ == "__main__":

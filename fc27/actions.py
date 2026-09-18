@@ -4,6 +4,13 @@ from .errors import FC27Error
 from .sbc import SbcService
 
 
+SBC_SAVE_TIMEOUT_CODES = {
+    "BRIDGE_TIMEOUT",
+    "PAGE_BRIDGE_TIMEOUT",
+    "EA_SERVICE_TIMEOUT",
+}
+
+
 class ActionDispatcher:
     def __init__(self, bridge, runtime, sync_full, catalog=None):
         self.bridge = bridge
@@ -183,39 +190,87 @@ class ActionDispatcher:
 
     def _save_sbc_squad(self, action):
         service = self._sbc_service()
+        expected_sync_id = action["_expected_sync_id"]
         validation = service.validate_solution(
-            action["solution_id"], self.runtime.account_summary()["last_full_sync_id"]
+            action["solution_id"], expected_sync_id
         )
-        response = self._call(
-            "saveSbcSquad",
-            {
-                "set_id": action["set_id"],
-                "challenge_id": action["challenge_id"],
-                "item_ids": action["item_ids"],
-            },
-        )
-        saved_item_ids = [int(value) for value in response.get("saved_item_ids") or []]
-        if saved_item_ids != action["item_ids"]:
-            raise FC27Error(
-                "SBC_SAVE_READBACK_FAILED",
-                "EA SBC save readback did not preserve the exact confirmed item order.",
-                recovery="Do not submit. Reload the challenge and inspect its saved squad.",
-                details={"saved_item_ids": saved_item_ids},
+        try:
+            save_response = self._call(
+                "saveSbcSquad",
+                {
+                    "set_id": action["set_id"],
+                    "challenge_id": action["challenge_id"],
+                    "item_ids": action["item_ids"],
+                },
             )
+        except FC27Error as error:
+            if error.code not in SBC_SAVE_TIMEOUT_CODES:
+                raise
+            raise FC27Error(
+                "SBC_SAVE_OUTCOME_UNKNOWN",
+                "The SBC save request timed out before its outcome could be confirmed.",
+                recovery="Do not save again. Reconcile this action_id through a fresh read-only EA request.",
+                details={"save_error": error.as_dict()},
+            ) from error
+        try:
+            response = self._call(
+                "readSavedSbcSquad",
+                {
+                    "set_id": action["set_id"],
+                    "challenge_id": action["challenge_id"],
+                },
+            )
+            saved_item_ids = [int(value) for value in response.get("saved_item_ids") or []]
+            if saved_item_ids != action["item_ids"]:
+                raise FC27Error(
+                    "SBC_SAVE_READBACK_FAILED",
+                    "Fresh EA SBC readback did not preserve the exact confirmed item order.",
+                    details={"saved_item_ids": saved_item_ids},
+                )
+            eligibility = response.get("squad", {}).get("eligibility_evidence") or {}
+            freshness = response.get("freshness") or {}
+            if (
+                response.get("source") != "ea_webapp_fresh"
+                or freshness.get("sets_requested") is not True
+                or freshness.get("challenges_requested") is not True
+                or freshness.get("challenge_loaded") is not True
+                or response.get("squad", {}).get("eligible") is not True
+                or eligibility.get("source") != "ea_challenge_requirements"
+                or eligibility.get("identity_match") is not True
+                or eligibility.get("all_requirements_met") is not True
+                or eligibility.get("submit_available") is not True
+            ):
+                raise FC27Error(
+                    "SBC_SAVE_READBACK_FAILED",
+                    "Fresh EA SBC readback did not provide complete positive eligibility evidence.",
+                    details={"eligibility_evidence": eligibility, "freshness": freshness},
+                )
+        except FC27Error as error:
+            raise FC27Error(
+                "SBC_SAVE_READBACK_PENDING",
+                "EA acknowledged the SBC save, but fresh readback did not complete successfully.",
+                recovery="Do not save again. Reconcile this action_id through a fresh read-only EA request.",
+                details={"save": save_response, "readback_error": error.as_dict()},
+            ) from error
         captured = service.capture_challenge(response)
         evidence = {
-            "saved_at_sync_id": self.runtime.account_summary()["last_full_sync_id"],
+            "saved_at_sync_id": expected_sync_id,
             "saved_item_ids": saved_item_ids,
-            "ea_eligible": response.get("squad", {}).get("eligible") is True,
+            "ea_eligible": True,
+            "reconciled": False,
+            "source": "ea_webapp_fresh",
+            "save": save_response,
             "ea": response,
         }
-        self.runtime.update_sbc_solution_status(action["solution_id"], "saved", evidence)
+        self.runtime.mark_sbc_solution_saved(
+            action["solution_id"], expected_sync_id, evidence
+        )
         return {"validation": validation["validation"], "capture": captured, **evidence}
 
     def _submit_sbc(self, action):
         service = self._sbc_service()
         validation = service.validate_solution(
-            action["solution_id"], self.runtime.account_summary()["last_full_sync_id"]
+            action["solution_id"], action["_expected_sync_id"]
         )
         response = self._call(
             "submitSbc",

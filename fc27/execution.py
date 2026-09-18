@@ -76,7 +76,11 @@ class ExecutionService:
                         recovery="Keep policy in observe mode until the action implementation is accepted.",
                     )
                 self._start_action(action["action_id"])
-                result = self.dispatcher(action)
+                dispatch_action = {
+                    **action,
+                    "_expected_sync_id": request["expected_sync_id"],
+                }
+                result = self.dispatcher(dispatch_action)
                 self._finish_action(action["action_id"], "complete", result=result)
                 completed += 1
             except FC27Error as error:
@@ -215,6 +219,8 @@ class ExecutionService:
                 denied = sorted(set(action["item_ids"]) & protected)
                 if denied:
                     self._policy_denied(f"SBC solution contains protected items: {denied}.")
+                if action["type"] == "save_sbc_squad":
+                    self.runtime.require_new_sbc_save_attempt(action["solution_id"])
                 if action["type"] == "submit_sbc" and solution["status"] != "saved":
                     raise FC27Error(
                         "SBC_NOT_ELIGIBLE",
@@ -238,6 +244,33 @@ class ExecutionService:
                             "The saved SBC squad does not have positive EA eligibility readback.",
                             recovery="Inspect failed EA requirements, generate a new solution, and save it again.",
                         )
+                    ea_readback = execution_evidence.get("ea") or {}
+                    freshness = ea_readback.get("freshness") or {}
+                    eligibility = (
+                        ea_readback.get("squad", {}).get("eligibility_evidence") or {}
+                    )
+                    if (
+                        execution_evidence.get("source") != "ea_webapp_fresh"
+                        or freshness.get("sets_requested") is not True
+                        or freshness.get("challenges_requested") is not True
+                        or freshness.get("challenge_loaded") is not True
+                        or eligibility.get("source") != "ea_challenge_requirements"
+                        or eligibility.get("identity_match") is not True
+                        or eligibility.get("all_requirements_met") is not True
+                        or eligibility.get("submit_available") is not True
+                    ):
+                        raise FC27Error(
+                            "SBC_NOT_ELIGIBLE",
+                            "SBC submission requires fresh trusted EA save evidence.",
+                            recovery="Run the guarded fresh verification for the saved action before submitting.",
+                        )
+                    self.runtime.require_completed_sbc_save(
+                        action["solution_id"],
+                        expected_sync_id,
+                        action["set_id"],
+                        action["challenge_id"],
+                        action["item_ids"],
+                    )
             if action["type"] == "list_item" and not item["tradeable"]:
                 self._policy_denied(f"Item {item_id} is untradeable and cannot be listed.")
             if action["type"] in PURCHASE_TYPES:

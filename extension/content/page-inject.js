@@ -347,6 +347,122 @@
     };
   }
 
+  function currentSbcContext(setId, challengeId) {
+    const currentViewController = globalThis.getAppMain?.()
+      ?.getRootViewController?.()
+      ?.getPresentedViewController?.()
+      ?.getCurrentViewController?.();
+    const currentController = currentViewController?.getCurrentController?.();
+    const overviewController = currentController?._overviewController
+      ?? currentController?.leftController;
+    const currentSet = overviewController?._set ?? currentController?._set;
+    const currentChallenge = overviewController?._challenge;
+    const currentSquad = overviewController?._squad ?? currentController?._squad;
+    const currentSetId = readValue(currentSet, ['id', 'setId']);
+    const currentChallengeId = readValue(currentChallenge, ['id', 'challengeId']);
+    if (
+      currentSet
+      && currentChallenge
+      && String(currentSetId) === String(setId)
+      && String(currentChallengeId) === String(challengeId)
+    ) {
+      return {
+        controller: currentController,
+        set: currentSet,
+        challenge: currentChallenge,
+        squad: currentSquad ?? currentChallenge.squad,
+      };
+    }
+    return null;
+  }
+
+  function savedSbcItemIds(squad) {
+    const normalized = sbcSquadReadback(squad);
+    return (normalized?.players || [])
+      .map((entry) => entry.item?.item_id)
+      .filter((itemId) => Number.isFinite(itemId) && itemId > 0);
+  }
+
+  function sbcSquadReadback(squad, eligibility = null) {
+    if (!squad) return null;
+    const players = typeof squad.getPlayers === 'function' ? squad.getPlayers() : squad.players;
+    const normalizedPlayers = Array.isArray(players)
+      ? players.map((entry, slotIndex) => {
+        const item = typeof entry?.getItem === 'function' ? entry.getItem() : entry?.item;
+        return {
+          slot_index: slotIndex,
+          position: readValue(entry, ['position', 'positionId'], ['getPosition']),
+          item: item ? serializeItem(item) : null,
+        };
+      }).filter((entry) => Number(entry.item?.item_id) > 0)
+      : [];
+    return {
+      formation: readValue(squad, ['formation', 'formationId', '_formation']),
+      rating: readValue(squad, ['rating', 'squadRating'], ['getRating']),
+      chemistry: readValue(squad, ['chemistry'], ['getChemistry']),
+      eligible: eligibility?.eligible === true,
+      eligibility_evidence: eligibility,
+      players: normalizedPlayers,
+    };
+  }
+
+  function currentSbcSubmissionEvidence(setId, challengeId, challenge) {
+    const context = currentSbcContext(setId, challengeId);
+    const requirements = challenge?.eligibilityRequirements || challenge?.requirements || [];
+    const requirementResults = requirements.map((requirement, index) => ({
+      index,
+      met: typeof challenge?.isRequirementMet === 'function'
+        ? Boolean(challenge.isRequirementMet(requirement))
+        : null,
+    }));
+    const root = context?.controller?.view?.getRootElement?.() || null;
+    const submitButton = root
+      ? Array.from(root.querySelectorAll('button')).find(
+        (button) => String(button.textContent || '').trim().toLowerCase() === 'submit'
+      )
+      : null;
+    const style = submitButton ? globalThis.getComputedStyle?.(submitButton) : null;
+    const submitAvailable = Boolean(
+      submitButton
+      && submitButton.disabled !== true
+      && submitButton.getAttribute('aria-disabled') !== 'true'
+      && submitButton.hidden !== true
+      && style?.display !== 'none'
+      && style?.visibility !== 'hidden'
+    );
+    const allRequirementsMet = requirementResults.length > 0
+      && requirementResults.every((value) => value.met === true);
+    return {
+      eligible: Boolean(context && allRequirementsMet && submitAvailable),
+      source: 'ea_challenge_requirements',
+      identity_match: Boolean(context),
+      requirements: requirementResults,
+      all_requirements_met: allRequirementsMet,
+      submit_available: submitAvailable,
+    };
+  }
+
+  function sbcActionReadback(set, challenge, squad, eligibility, status = null) {
+    return {
+      set: {
+        id: readValue(set, ['id', 'setId']),
+        name: readValue(set, ['name', 'displayName']),
+      },
+      challenge: {
+        id: readValue(challenge, ['id', 'challengeId']),
+        set_id: readValue(challenge, ['setId']),
+        name: readValue(challenge, ['name', 'displayName']),
+        status: readValue(challenge, ['status']),
+        completed: typeof challenge?.isCompleted === 'function'
+          ? Boolean(challenge.isCompleted())
+          : Boolean(challenge?.completed),
+      },
+      squad: sbcSquadReadback(squad, eligibility),
+      saved_item_ids: savedSbcItemIds(squad),
+      status,
+    };
+  }
+
   async function loadSbcSets() {
     const appServices = requireWebAppServices();
     const response = await observeOnce(appServices.SBC.requestSets());
@@ -706,21 +822,53 @@
       const squad = await loadChallengeSquad(loaded.appServices, loaded.challenge);
       squad.removeAllItems();
       squad.setPlayers(items, true);
-      await observeOnce(loaded.appServices.SBC.saveChallenge(loaded.challenge));
-      const refreshed = await observeOnce(
+      const response = await observeOnce(loaded.appServices.SBC.saveChallenge(loaded.challenge));
+      return {
+        set_id: Number(params.set_id),
+        challenge_id: Number(params.challenge_id),
+        requested_item_ids: (params.item_ids || []).map(Number),
+        status: response.status ?? null,
+      };
+    },
+
+    async readSavedSbcSquad(params) {
+      const loaded = await findSbcChallenge(params.set_id, params.challenge_id);
+      const response = await observeOnce(
         loaded.appServices.SBC.sbcDAO.loadChallenge(
           loaded.challenge.id,
-          typeof loaded.challenge.isInProgress === 'function' ? loaded.challenge.isInProgress() : true
-        )
+          typeof loaded.challenge.isInProgress === 'function'
+            ? loaded.challenge.isInProgress()
+            : true
+        ),
+        15000
       );
-      const refreshedSquad = refreshed.data?.squad ?? refreshed.response?.squad ?? loaded.challenge.squad;
-      loaded.challenge.squad = refreshedSquad;
+      const squad = response.data?.squad ?? response.response?.squad ?? null;
+      if (!squad) {
+        throw Object.assign(
+          new Error(`SBC challenge ${params.challenge_id} did not return a saved squad.`),
+          { code: 'SBC_SQUAD_UNAVAILABLE' }
+        );
+      }
+      loaded.challenge.squad = squad;
+      const eligibility = currentSbcSubmissionEvidence(
+        params.set_id,
+        params.challenge_id,
+        loaded.challenge
+      );
       return {
-        set: plainSbcSet(loaded.set),
-        challenge: plainSbcChallenge(loaded.challenge),
-        squad: plainSbcSquad(refreshedSquad),
-        saved_item_ids: params.item_ids.map(Number),
-        status: refreshed.status ?? null,
+        ...sbcActionReadback(
+          loaded.set,
+          loaded.challenge,
+          squad,
+          eligibility,
+          response.status ?? null
+        ),
+        source: 'ea_webapp_fresh',
+        freshness: {
+          sets_requested: true,
+          challenges_requested: true,
+          challenge_loaded: true,
+        },
       };
     },
 

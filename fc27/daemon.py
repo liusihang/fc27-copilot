@@ -66,19 +66,48 @@ class FC27Daemon:
             return self.health()
         if method == "catalog_query":
             return self.catalog.query(params)
-        if method == "browser_call":
-            browser_method = params.get("method")
-            if not browser_method:
-                raise FC27Error("INVALID_REQUEST", "browser_call requires params.method")
-            return self.bridge.call(
-                browser_method,
-                params.get("params") or {},
-                timeout_seconds=min(max(float(params.get("timeout_seconds", 30)), 1), 60),
-            )
+        if method == "reconcile_sbc_save":
+            if not self.accounts.active:
+                raise FC27Error(
+                    "ACCOUNT_NOT_INITIALIZED",
+                    "No EA Persona runtime database has been selected yet.",
+                )
+            action_id = params.get("action_id")
+            if not action_id:
+                raise FC27Error("INVALID_REQUEST", "reconcile_sbc_save requires params.action_id")
+            with self._execution_lock:
+                target = self.accounts.active.sbc_save_reconciliation_target(action_id)
+                response = self._browser_tool(
+                    "readSavedSbcSquad",
+                    {
+                        "set_id": target["set_id"],
+                        "challenge_id": target["challenge_id"],
+                    },
+                )
+                return self.accounts.active.reconcile_sbc_save_action(action_id, response)
+        if method == "verify_sbc_save":
+            if not self.accounts.active:
+                raise FC27Error(
+                    "ACCOUNT_NOT_INITIALIZED",
+                    "No EA Persona runtime database has been selected yet.",
+                )
+            action_id = params.get("action_id")
+            if not action_id:
+                raise FC27Error("INVALID_REQUEST", "verify_sbc_save requires params.action_id")
+            with self._execution_lock:
+                target = self.accounts.active.sbc_save_verification_target(action_id)
+                response = self._browser_tool(
+                    "readSavedSbcSquad",
+                    {
+                        "set_id": target["set_id"],
+                        "challenge_id": target["challenge_id"],
+                    },
+                )
+                return self.accounts.active.verify_sbc_saved_action(action_id, response)
         raise FC27Error(
             "METHOD_NOT_FOUND",
             f"Unknown daemon RPC method: {method}",
-            recovery="Use status, catalog_query, or browser_call.",
+            recovery="Use status, catalog_query, reconcile_sbc_save, or verify_sbc_save.",
         )
 
     def call_tool(self, name, arguments):
@@ -157,7 +186,9 @@ class FC27Daemon:
                         f"Full synchronization requires: {', '.join(missing)}.",
                         recovery="Include coins, club, storage, unassigned, and tradepile.",
                     )
-                return self._envelope("ea_webapp", self._sync_full("login_full", requested))
+                with self._execution_lock:
+                    data = self._sync_full("login_full", requested)
+                return self._envelope("ea_webapp", data)
             if name == "market_search":
                 if not self.accounts.active:
                     raise FC27Error(
