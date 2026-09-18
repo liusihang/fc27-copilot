@@ -165,6 +165,89 @@ class MarketServiceTest(unittest.TestCase):
         self.assertEqual(third["persisted_changes"], {"inserted": 1, "unchanged": 1})
         self.assertEqual(len(third["cards"][0]["history"]), 3)
 
+    def test_market_scan_returns_trade_ids_and_persists_only_aggregates(self):
+        service = MarketService(self.runtime, FakePriceClient([]))
+        result = service.record_ea_market_scan(
+            100,
+            {
+                "auctionInfo": [
+                    {
+                        "tradeId": "101",
+                        "startingBid": 600,
+                        "buyNowPrice": 1000,
+                        "currentBid": 0,
+                        "tradeState": "active",
+                        "expires": 100,
+                        "itemData": {"item_id": 9001, "card_ea_id": 100},
+                    },
+                    {
+                        "tradeId": "102",
+                        "startingBid": 700,
+                        "buyNowPrice": 1100,
+                        "currentBid": 800,
+                        "tradeState": "active",
+                        "expires": 200,
+                        "itemData": {"item_id": 9002, "card_ea_id": 100},
+                    },
+                    {
+                        "tradeId": "103",
+                        "startingBid": 500,
+                        "buyNowPrice": 1200,
+                        "currentBid": 0,
+                        "tradeState": "active",
+                        "expires": 300,
+                        "itemData": {"item_id": 9003, "card_ea_id": 100},
+                    },
+                    {
+                        "tradeId": "104",
+                        "startingBid": 400,
+                        "buyNowPrice": 900,
+                        "tradeState": "expired",
+                        "itemData": {"item_id": 9004, "card_ea_id": 100},
+                    },
+                ]
+            },
+        )
+        self.assertEqual([row["trade_id"] for row in result["listings"]], [101, 102, 103])
+        self.assertEqual(result["sample_count"], 3)
+        self.assertEqual(result["min_buy_now"], 1000)
+        self.assertEqual(result["median_buy_now"], 1100)
+        self.assertEqual(result["p25_buy_now"], 1000)
+        self.assertEqual(result["p75_buy_now"], 1200)
+        self.assertEqual(result["min_bid"], 500)
+
+        with self.runtime.connect() as connection:
+            row = connection.execute("SELECT * FROM market_scans").fetchone()
+            columns = [description[0] for description in connection.execute("SELECT * FROM market_scans").description]
+        self.assertEqual(row["sample_count"], 3)
+        self.assertNotIn("trade_id", columns)
+
+        context = MarketService(
+            self.runtime,
+            FakePriceClient([snapshot(1000, 1200, "2026-09-18T12:03:00.000Z")]),
+        ).price_context([100], 72)
+        scan = context["cards"][0]["market_scans"][0]
+        self.assertEqual(scan["source"], "ea_webapp")
+        self.assertEqual(scan["platform"], "pc")
+
+    def test_market_scan_rejects_a_different_card(self):
+        service = MarketService(self.runtime, FakePriceClient([]))
+        with self.assertRaises(FC27Error) as context:
+            service.record_ea_market_scan(
+                100,
+                {
+                    "auctionInfo": [
+                        {
+                            "tradeId": 101,
+                            "buyNowPrice": 1000,
+                            "tradeState": "active",
+                            "itemData": {"item_id": 9001, "card_ea_id": 200},
+                        }
+                    ]
+                },
+            )
+        self.assertEqual(context.exception.code, "EA_MARKET_SCHEMA_INVALID")
+
 
 if __name__ == "__main__":
     unittest.main()

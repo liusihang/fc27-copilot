@@ -165,12 +165,22 @@ class FC27Daemon:
                     "ea_webapp", {"account": runtime.account_summary(), **summary}
                 )
             if name == "market_search":
-                data = self._browser_tool("searchTransferMarket", {
+                if not self.accounts.active:
+                    raise FC27Error(
+                        "ACCOUNT_NOT_INITIALIZED",
+                        "No EA Persona runtime database has been selected yet.",
+                        retryable=True,
+                        recovery="Run FC27:sync_club after login, then retry market_search.",
+                    )
+                raw = self._browser_tool("searchTransferMarket", {
                     "definition_id": arguments.get("card_ea_id"),
                     "min_buy_now": arguments.get("min_buy_now"),
                     "max_buy_now": arguments.get("max_buy_now"),
                     "limit": arguments.get("limit", 21),
                 })
+                data = MarketService(self.accounts.active).record_ea_market_scan(
+                    arguments.get("card_ea_id"), raw
+                )
                 return self._envelope("ea_webapp", data)
             if name == "sbc_query":
                 challenge_id = arguments.get("challenge_id")

@@ -1,4 +1,5 @@
 import json
+import math
 from collections import Counter
 from datetime import datetime, timedelta, timezone
 from urllib.request import Request, urlopen
@@ -210,6 +211,7 @@ class MarketService:
                     "card_ea_id": card_ea_id,
                     "current": current,
                     "history": facts["history"].get(card_ea_id, []),
+                    "market_scans": facts["market_scans"].get(card_ea_id, []),
                     "holdings": {
                         "count": len(holdings),
                         "tradeable_count": sum(item["tradeable"] for item in holdings),
@@ -258,6 +260,131 @@ class MarketService:
             "missing_card_ea_ids": snapshot["missing_card_ea_ids"],
             "cards": cards,
         }
+
+    def record_ea_market_scan(self, card_ea_id, response):
+        card_ea_id = int(card_ea_id)
+        observed_at = utc_now()
+        listings = []
+        seen_trade_ids = set()
+        for auction in response.get("auctionInfo") or []:
+            state = str(auction.get("tradeState") or "active").lower()
+            if state in ("expired", "closed", "sold", "inactive"):
+                continue
+            trade_id = auction.get("tradeId")
+            if trade_id is None:
+                continue
+            try:
+                trade_id = int(trade_id)
+            except (TypeError, ValueError) as error:
+                raise FC27Error(
+                    "EA_MARKET_SCHEMA_INVALID",
+                    "EA market result contains a non-integer trade ID.",
+                    recovery="Capture the current transfer-market response and update the adapter.",
+                    details={"trade_id": trade_id},
+                ) from error
+            if trade_id <= 0:
+                continue
+            if trade_id in seen_trade_ids:
+                raise FC27Error(
+                    "EA_MARKET_SCHEMA_INVALID",
+                    f"EA market result repeated trade ID {trade_id}.",
+                    recovery="Discard this scan and repeat the market search.",
+                )
+            seen_trade_ids.add(trade_id)
+            item = auction.get("itemData") or {}
+            observed_card_ea_id = item.get(
+                "card_ea_id", item.get("definitionId", card_ea_id)
+            )
+            try:
+                observed_card_ea_id = int(observed_card_ea_id)
+            except (TypeError, ValueError) as error:
+                raise FC27Error(
+                    "EA_MARKET_SCHEMA_INVALID",
+                    "EA market result contains a non-integer card definition ID.",
+                    recovery="Discard this scan and inspect the current market response.",
+                    details={"card_ea_id": observed_card_ea_id},
+                ) from error
+            if observed_card_ea_id != card_ea_id:
+                raise FC27Error(
+                    "EA_MARKET_SCHEMA_INVALID",
+                    "EA market result does not match the requested card definition.",
+                    recovery="Discard this scan and repeat the exact-card market search.",
+                    details={
+                        "requested_card_ea_id": card_ea_id,
+                        "observed_card_ea_id": observed_card_ea_id,
+                        "trade_id": trade_id,
+                    },
+                )
+            listings.append(
+                {
+                    "trade_id": trade_id,
+                    "item_id": item.get("item_id", item.get("id")),
+                    "card_ea_id": observed_card_ea_id,
+                    "starting_bid": self._positive_int(
+                        auction.get("startingBid"), "startingBid"
+                    ),
+                    "buy_now_price": self._positive_int(
+                        auction.get("buyNowPrice"), "buyNowPrice"
+                    ),
+                    "current_bid": self._positive_int(
+                        auction.get("currentBid"), "currentBid"
+                    ),
+                    "expires": auction.get("expires"),
+                    "status": state,
+                }
+            )
+
+        buy_now_prices = sorted(
+            row["buy_now_price"]
+            for row in listings
+            if row["buy_now_price"] is not None
+        )
+        bids = []
+        for row in listings:
+            bid = row["current_bid"] or row["starting_bid"]
+            if bid is not None:
+                bids.append(bid)
+        summary = {
+            "card_ea_id": card_ea_id,
+            "observed_at": observed_at,
+            "sample_count": len(listings),
+            "min_buy_now": min(buy_now_prices) if buy_now_prices else None,
+            "median_buy_now": self._nearest_rank(buy_now_prices, 0.50),
+            "p25_buy_now": self._nearest_rank(buy_now_prices, 0.25),
+            "p75_buy_now": self._nearest_rank(buy_now_prices, 0.75),
+            "min_bid": min(bids) if bids else None,
+        }
+        scan_id = self.runtime.record_market_scan(summary)
+        account = self.runtime.account_summary()
+        return {
+            "source": "ea_webapp",
+            "platform": account["platform"] if account else None,
+            "scan_id": scan_id,
+            **summary,
+            "listings": listings,
+        }
+
+    @staticmethod
+    def _positive_int(value, field):
+        if value is None:
+            return None
+        try:
+            value = int(value)
+        except (TypeError, ValueError) as error:
+            raise FC27Error(
+                "EA_MARKET_SCHEMA_INVALID",
+                f"EA market result contains a non-integer {field} value.",
+                recovery="Discard this scan and inspect the current market response.",
+                details={"field": field, "value": value},
+            ) from error
+        return value if value > 0 else None
+
+    @staticmethod
+    def _nearest_rank(values, fraction):
+        if not values:
+            return None
+        rank = max(1, math.ceil(len(values) * fraction))
+        return values[rank - 1]
 
     @staticmethod
     def _net_result(gross_sale_price, acquisition_cost):

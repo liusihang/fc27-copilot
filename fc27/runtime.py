@@ -416,6 +416,22 @@ class RuntimeDB:
                     card_ea_ids,
                 )
             }
+            market_scan_rows = [
+                dict(row)
+                for row in connection.execute(
+                    f"""SELECT scan_id, card_ea_id, observed_at, sample_count,
+                               min_buy_now, median_buy_now, p25_buy_now,
+                               p75_buy_now, min_bid
+                        FROM market_scans
+                        WHERE card_ea_id IN ({placeholders}) AND observed_at >= ?
+                        ORDER BY card_ea_id, observed_at DESC, scan_id DESC""",
+                    [*card_ea_ids, history_since],
+                )
+            ]
+            account = connection.execute(
+                "SELECT platform FROM account_state WHERE persona_id = ?",
+                (self.persona_id,),
+            ).fetchone()
         history = {card_ea_id: [] for card_ea_id in card_ea_ids}
         for row in history_rows:
             history[row["card_ea_id"]].append(row)
@@ -423,11 +439,38 @@ class RuntimeDB:
         for row in holding_rows:
             row["tradeable"] = bool(row["tradeable"])
             holdings[row["card_ea_id"]].append(row)
+        market_scans = {card_ea_id: [] for card_ea_id in card_ea_ids}
+        for row in market_scan_rows:
+            row["source"] = "ea_webapp"
+            row["platform"] = account["platform"] if account else None
+            market_scans[row["card_ea_id"]].append(row)
         return {
             "history": history,
             "holdings": holdings,
             "active_listing_counts": active_listing_counts,
+            "market_scans": market_scans,
         }
+
+    def record_market_scan(self, scan):
+        with self.connect() as connection:
+            cursor = connection.execute(
+                """INSERT INTO market_scans(
+                     card_ea_id, observed_at, sample_count, min_buy_now,
+                     median_buy_now, p25_buy_now, p75_buy_now, min_bid
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    scan["card_ea_id"],
+                    scan["observed_at"],
+                    scan["sample_count"],
+                    scan["min_buy_now"],
+                    scan["median_buy_now"],
+                    scan["p25_buy_now"],
+                    scan["p75_buy_now"],
+                    scan["min_bid"],
+                ),
+            )
+            connection.commit()
+            return cursor.lastrowid
 
     def _validate_schema(self, connection):
         try:
