@@ -48,6 +48,16 @@ python3 fc27d.py
 
 守护进程和 Chrome 桥接默认使用固定地址 `127.0.0.1:3926`。
 
+## MCP stdio
+
+`mcp_stdio.py` is the MCP process launched by an MCP client. It forwards newline-delimited JSON-RPC to the running daemon:
+
+```bash
+python3 mcp_stdio.py
+```
+
+The MCP server name is `FC27` and exposes exactly ten tools documented in [MCP contract](docs/mcp-contract.md). Start `fc27d.py` before launching the stdio adapter.
+
 ## 声明
 
 这是一个非官方的个人研究和本地工具项目，与 Electronic Arts、FUT.GG 或相关第三方没有隶属或认可关系。EA Web App 接口未公开支持，接口和服务规则可能变化。项目不提供验证码、验证流程、限流或访问控制绕过能力。

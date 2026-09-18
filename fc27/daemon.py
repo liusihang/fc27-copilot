@@ -2,6 +2,7 @@ import json
 import os
 import signal
 import threading
+import uuid
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -9,6 +10,7 @@ from pathlib import Path
 from .bridge import BrowserBridge
 from .catalog import CatalogDB
 from .errors import FC27Error
+from .mcp import MCPServer
 
 
 MAX_REQUEST_BYTES = 1024 * 1024
@@ -23,6 +25,8 @@ class FC27Daemon:
         self.catalog = CatalogDB(catalog_path)
         self.web_root = Path(web_root)
         self.bridge = bridge or BrowserBridge()
+        self.mcp = MCPServer(self)
+        self._catalog_refresh_lock = threading.Lock()
 
     def health(self):
         catalog_validation = self.catalog.validate()
@@ -55,6 +59,133 @@ class FC27Daemon:
             f"Unknown daemon RPC method: {method}",
             recovery="Use status, catalog_query, or browser_call.",
         )
+
+    def call_tool(self, name, arguments):
+        try:
+            if name == "status":
+                return self._envelope("fc27d", self.health())
+            if name == "catalog_query":
+                return self._envelope("catalog", self.catalog.query(arguments))
+            if name == "catalog_refresh":
+                return self._envelope("futgg", self._refresh_catalog())
+            if name == "club_query":
+                raise FC27Error(
+                    "ACCOUNT_NOT_INITIALIZED",
+                    "No EA Persona runtime database has been selected yet.",
+                    retryable=True,
+                    recovery="Log in, connect the browser bridge, then call FC27:sync_club.",
+                )
+            if name == "sync_club":
+                if not self.bridge.health()["connected"]:
+                    raise FC27Error(
+                        "EA_SESSION_REQUIRED",
+                        "An authenticated FC27 Web App session and connected browser bridge are required.",
+                        retryable=True,
+                        recovery="Start fc27d, connect the extension at http://127.0.0.1:3926, log in to FC27, then retry.",
+                    )
+                raise FC27Error(
+                    "ACCOUNT_SYNC_NOT_READY",
+                    "Club synchronization is implemented in Milestone M3 after authenticated endpoint acceptance.",
+                    retryable=False,
+                    recovery="Complete the read-only browser acceptance before enabling account synchronization.",
+                )
+            if name == "market_search":
+                data = self._browser_tool("searchTransferMarket", {
+                    "definition_id": arguments.get("card_ea_id"),
+                    "min_buy_now": arguments.get("min_buy_now"),
+                    "max_buy_now": arguments.get("max_buy_now"),
+                    "limit": arguments.get("limit", 21),
+                })
+                return self._envelope("ea_webapp", data)
+            if name == "sbc_query":
+                challenge_id = arguments.get("challenge_id")
+                method = "getSbcChallenge" if challenge_id is not None else "getSbcSets"
+                params = {"challenge_id": challenge_id} if challenge_id is not None else {}
+                return self._envelope("ea_webapp", self._browser_tool(method, params))
+            if name == "price_context":
+                raise FC27Error(
+                    "PRICE_CONTEXT_NOT_READY",
+                    "Reference price persistence is scheduled for Milestone M4.",
+                    recovery="Use FC27:catalog_query for card facts until price_context is implemented.",
+                )
+            if name == "sbc_solve":
+                raise FC27Error(
+                    "SBC_SCHEMA_UNSUPPORTED",
+                    "No authenticated FC27 SBC requirement schema has been captured yet.",
+                    recovery="Complete read-only SBC capture before requesting solutions.",
+                )
+            if name == "execute_actions":
+                raise FC27Error(
+                    "EXECUTION_DISABLED",
+                    "Account actions are disabled while policy mode is observe.",
+                    recovery="Complete read-only acceptance before separately enabling suggest mode.",
+                )
+            raise FC27Error("TOOL_NOT_FOUND", f"Unknown FC27 tool: {name}")
+        except FC27Error as error:
+            return self._error_envelope(error)
+        except Exception as error:
+            return self._error_envelope(
+                FC27Error(
+                    "INTERNAL_ERROR",
+                    "fc27d could not complete the tool call.",
+                    retryable=False,
+                    recovery="Inspect the fc27d stderr log and retry only after resolving the reported failure.",
+                    details={"exception": type(error).__name__, "message": str(error)},
+                )
+            )
+
+    def _browser_tool(self, method, params):
+        response = self.bridge.call(method, params)
+        if not response.get("ok", False):
+            error = response.get("error") or {}
+            raise FC27Error(
+                error.get("code") or "EA_REQUEST_FAILED",
+                error.get("message") or "The EA Web App request failed.",
+                retryable=error.get("status") not in (403, 461),
+                recovery="Inspect FC27:status and the Web App before retrying.",
+                details=error,
+            )
+        return response.get("data")
+
+    def _refresh_catalog(self):
+        if not self._catalog_refresh_lock.acquire(blocking=False):
+            raise FC27Error("CATALOG_REFRESH_RUNNING", "A catalog refresh is already running.", retryable=True)
+        try:
+            from scripts.refresh_catalog import refresh_catalog
+
+            return refresh_catalog(self.catalog.path)
+        finally:
+            self._catalog_refresh_lock.release()
+
+    def _envelope(self, source, data, complete=True):
+        metadata = self.catalog.metadata()
+        return {
+            "ok": True,
+            "meta": {
+                "request_id": str(uuid.uuid4()),
+                "observed_at": utc_now(),
+                "source": source,
+                "complete": complete,
+                "catalog_snapshot_at": metadata.get("snapshot_finished_at"),
+                "club_sync_id": None,
+            },
+            "data": data,
+        }
+
+    def _error_envelope(self, error):
+        metadata = self.catalog.metadata()
+        return {
+            "ok": False,
+            "meta": {
+                "request_id": str(uuid.uuid4()),
+                "observed_at": utc_now(),
+                "source": "fc27d",
+                "complete": False,
+                "catalog_snapshot_at": metadata.get("snapshot_finished_at"),
+                "club_sync_id": None,
+            },
+            "error": error.as_dict(),
+        }
 
 
 class FC27HTTPServer(ThreadingHTTPServer):
@@ -109,6 +240,9 @@ class FC27RequestHandler(BaseHTTPRequestHandler):
                 return
             if self.path == "/rpc":
                 self._json(200, {"ok": True, "data": self.server.fc27.rpc(payload)})
+                return
+            if self.path == "/mcp":
+                self._json(200, self.server.fc27.mcp.handle(payload))
                 return
             self._json(404, {"ok": False, "error": {"code": "NOT_FOUND"}})
         except FC27Error as error:
