@@ -1,0 +1,14 @@
+.DS_Store
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+dist/
+data/*.sqlite
+data/*.sqlite-*
+data/accounts/
+logs/
+*.log
+.env
+.env.*
+!data/.gitkeep
