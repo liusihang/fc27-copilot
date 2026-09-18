@@ -17,3 +17,13 @@ python3 scripts/validate_catalog.py data/catalog.sqlite \
 `catalog-manifest.json` records the accepted normalized output hash and validation counts from 2026-09-18.
 
 Future account databases live under `data/accounts/<persona_id>/runtime.sqlite` and remain local.
+
+To refresh from the current FUT.GG manifest:
+
+```bash
+HTTPS_PROXY=http://127.0.0.1:7897 \
+HTTP_PROXY=http://127.0.0.1:7897 \
+python3 scripts/refresh_catalog.py --out data/catalog.sqlite
+```
+
+The refresh builds a temporary source snapshot, validates all source mappings, converts it to schema v3, validates the normalized database, and replaces the target only after the converter's integrity gates pass.

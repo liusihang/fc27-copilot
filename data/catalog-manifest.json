@@ -26,16 +26,16 @@
   "metadata": {
     "card_count": "19676",
     "game_year": "27",
-    "manifest_hash": "",
-    "manifest_version": "",
+    "manifest_hash": "fe5fbef777a1bc6989df1a07d9b243b871c499bc88997b758905bada3171e736",
+    "manifest_version": "1",
     "player_count": "19595",
     "schema_version": "3",
-    "snapshot_finished_at": "2026-09-17T17:06:37Z",
-    "snapshot_started_at": "2026-09-17T17:03:36Z",
+    "snapshot_finished_at": "2026-09-18T10:04:38Z",
+    "snapshot_started_at": "2026-09-18T10:01:23Z",
     "source": "FUT.GG"
   },
   "ok": true,
   "path": "data/catalog.sqlite",
-  "sha256": "eb6df656394c0a66139e51276a4f444eabdc5f7e80aff14ffbe01f1fed6f2e6f",
+  "sha256": "6247ea16cbda54deb36798bb675e3cf690e46de902a3e457397095d621c79bde",
   "size_bytes": 19288064
 }
