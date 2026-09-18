@@ -17,6 +17,8 @@ The accepted low-value limits are:
 - maximum tradepile usage: 20;
 - enabled actions: Buy Now, item move, and item listing.
 
+SBC save and submit action types are implemented but remain absent from `allowed_action_types`. Enabling either action is a separate exact-target authorization.
+
 ## Modes
 
 - `observe`: reject every action with `EXECUTION_DISABLED`.

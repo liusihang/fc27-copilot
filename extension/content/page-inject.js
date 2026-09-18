@@ -280,22 +280,26 @@
     return {
       id: readValue(set, ['id', 'setId']),
       name: readValue(set, ['name', 'displayName']),
+      description: readValue(set, ['description', 'desc']),
       status: readValue(set, ['status']),
       expires: readValue(set, ['expires', 'endTime']),
       repeatable: Boolean(readValue(set, ['repeatable', 'isRepeatable'])),
-      challenge_count: Array.isArray(set?.challenges) ? set.challenges.length : null,
+      completed: Boolean(readValue(set, ['completed'], ['isComplete'])),
+      rewards: plainValue(readValue(set, ['rewards', 'awards']), 0, new WeakSet(), 8),
+      challenge_count: readValue(set, ['challengesCount']) ?? (Array.isArray(set?.challenges) ? set.challenges.length : null),
+      raw: plainValue(set, 0, new WeakSet(), 8),
     };
   }
 
-  function plainValue(value, depth = 0, seen = new WeakSet()) {
+  function plainValue(value, depth = 0, seen = new WeakSet(), maxDepth = 3) {
     if (value === null || value === undefined || ['string', 'number', 'boolean'].includes(typeof value)) return value ?? null;
-    if (typeof value === 'function' || depth > 3) return undefined;
-    if (Array.isArray(value)) return value.map((entry) => plainValue(entry, depth + 1, seen)).filter((entry) => entry !== undefined);
+    if (typeof value === 'function' || depth > maxDepth) return undefined;
+    if (Array.isArray(value)) return value.map((entry) => plainValue(entry, depth + 1, seen, maxDepth)).filter((entry) => entry !== undefined);
     if (typeof value !== 'object' || seen.has(value)) return undefined;
     seen.add(value);
     const output = {};
     for (const key of Object.keys(value)) {
-      const normalized = plainValue(value[key], depth + 1, seen);
+      const normalized = plainValue(value[key], depth + 1, seen, maxDepth);
       if (normalized !== undefined) output[key] = normalized;
     }
     return output;
@@ -307,10 +311,39 @@
       id: readValue(challenge, ['id', 'challengeId']),
       set_id: readValue(challenge, ['setId']),
       name: readValue(challenge, ['name', 'displayName']),
+      description: readValue(challenge, ['description', 'desc']),
       status: readValue(challenge, ['status']),
+      expires: readValue(challenge, ['expires', 'endTime']),
       repeatable: Boolean(readValue(challenge, ['repeatable', 'isRepeatable'])),
       completed: typeof challenge?.isCompleted === 'function' ? Boolean(challenge.isCompleted()) : Boolean(challenge?.completed),
-      requirements: plainValue(requirements),
+      formation: plainValue(readValue(challenge, ['formation', 'formationData']), 0, new WeakSet(), 8),
+      slots: plainValue(readValue(challenge, ['slots', 'squadSlots', 'positions']), 0, new WeakSet(), 8),
+      rewards: plainValue(readValue(challenge, ['rewards', 'awards']), 0, new WeakSet(), 8),
+      requirements: plainValue(requirements, 0, new WeakSet(), 8),
+      raw: plainValue(challenge, 0, new WeakSet(), 8),
+    };
+  }
+
+  function plainSbcSquad(squad) {
+    if (!squad) return null;
+    const players = typeof squad.getPlayers === 'function' ? squad.getPlayers() : squad.players;
+    return {
+      formation: readValue(squad, ['formation', 'formationId']),
+      rating: readValue(squad, ['rating', 'squadRating'], ['getRating']),
+      chemistry: readValue(squad, ['chemistry'], ['getChemistry']),
+      eligible: readValue(squad, ['eligible', 'isEligible'], ['isEligible']),
+      players: Array.isArray(players)
+        ? players.map((entry, slotIndex) => {
+          const item = typeof entry?.getItem === 'function' ? entry.getItem() : entry?.item;
+          return {
+            slot_index: slotIndex,
+            position: readValue(entry, ['position', 'positionId'], ['getPosition']),
+            item: item ? serializeItem(item) : null,
+            raw: plainValue(entry, 0, new WeakSet(), 5),
+          };
+        })
+        : [],
+      raw: plainValue(squad, 0, new WeakSet(), 8),
     };
   }
 
@@ -336,16 +369,20 @@
     const response = await observeOnce(appServices.SBC.requestChallengesForSet(set));
     const payload = response.data ?? response.response ?? {};
     const challenges = Array.isArray(payload.challenges) ? payload.challenges : Array.isArray(payload) ? payload : [];
-    return { set, challenges, status: response.status ?? null };
+    return { appServices, set, challenges, status: response.status ?? null };
   }
 
-  function observeOnce(observable) {
+  function observeOnce(observable, timeoutMs = 30000) {
     return new Promise((resolve, reject) => {
       if (!observable?.observe) {
         reject(Object.assign(new Error('EA Web App service did not return an observable.'), { code: 'EA_SERVICE_UNAVAILABLE' }));
         return;
       }
+      const timeout = setTimeout(() => {
+        reject(Object.assign(new Error('EA Web App service did not respond before the local timeout.'), { code: 'EA_SERVICE_TIMEOUT' }));
+      }, timeoutMs);
       observable.observe(undefined, (sender, response) => {
+        clearTimeout(timeout);
         if (response?.success === false) {
           reject(Object.assign(new Error(`EA Web App service failed with status ${response.status ?? 'unknown'}.`), {
             status: response.status ?? null,
@@ -357,6 +394,54 @@
         resolve(response || {});
       });
     });
+  }
+
+  async function findSbcChallenge(setId, challengeId) {
+    const loaded = await loadSbcChallenges(setId);
+    const challenge = loaded.challenges.find(
+      (entry) => String(readValue(entry, ['id', 'challengeId'])) === String(challengeId)
+    );
+    if (!challenge) {
+      throw Object.assign(new Error(`SBC challenge ${challengeId} was not found.`), { code: 'SBC_CHALLENGE_NOT_FOUND' });
+    }
+    return { ...loaded, challenge };
+  }
+
+  async function exactOwnedItems(appServices, itemIds) {
+    const ids = itemIds.map(Number);
+    const response = await observeOnce(appServices.Item.requestItemsById(ids));
+    const byId = new Map(
+      resultItems(response).map((item) => [Number(readValue(item, ['id', 'itemId'], ['getId'])), item])
+    );
+    const missing = ids.filter((itemId) => !byId.has(itemId));
+    if (missing.length) {
+      throw Object.assign(new Error(`Owned SBC items were not found: ${missing.join(', ')}.`), {
+        code: 'ITEM_NOT_FOUND',
+        payload: { missing_item_ids: missing },
+      });
+    }
+    const items = ids.map((itemId) => byId.get(itemId));
+    const concepts = items
+      .filter((item) => Boolean(readValue(item, ['concept', 'isConcept'])))
+      .map((item) => Number(readValue(item, ['id', 'itemId'], ['getId'])));
+    if (concepts.length) {
+      throw Object.assign(new Error(`Concept items cannot be saved to an SBC: ${concepts.join(', ')}.`), {
+        code: 'SBC_CONCEPT_ITEM',
+        payload: { concept_item_ids: concepts },
+      });
+    }
+    return items;
+  }
+
+  async function loadChallengeSquad(appServices, challenge) {
+    const response = await observeOnce(appServices.SBC.loadChallenge(challenge));
+    const payload = response.data ?? response.response ?? {};
+    const squad = payload.squad ?? challenge.squad ?? null;
+    if (!squad) {
+      throw Object.assign(new Error(`SBC challenge ${challenge.id} did not return a squad.`), { code: 'SBC_SQUAD_UNAVAILABLE' });
+    }
+    challenge.squad = squad;
+    return squad;
   }
 
   function requireWebAppServices() {
@@ -613,6 +698,71 @@
         if (challenge) return { set: plainSbcSet(set), challenge: plainSbcChallenge(challenge), status: result.status };
       }
       throw Object.assign(new Error(`SBC challenge ${params.challenge_id} was not found.`), { code: 'SBC_CHALLENGE_NOT_FOUND' });
+    },
+
+    async saveSbcSquad(params) {
+      const loaded = await findSbcChallenge(params.set_id, params.challenge_id);
+      const items = await exactOwnedItems(loaded.appServices, params.item_ids || []);
+      const squad = await loadChallengeSquad(loaded.appServices, loaded.challenge);
+      squad.removeAllItems();
+      squad.setPlayers(items, true);
+      await observeOnce(loaded.appServices.SBC.saveChallenge(loaded.challenge));
+      const refreshed = await observeOnce(
+        loaded.appServices.SBC.sbcDAO.loadChallenge(
+          loaded.challenge.id,
+          typeof loaded.challenge.isInProgress === 'function' ? loaded.challenge.isInProgress() : true
+        )
+      );
+      const refreshedSquad = refreshed.data?.squad ?? refreshed.response?.squad ?? loaded.challenge.squad;
+      loaded.challenge.squad = refreshedSquad;
+      return {
+        set: plainSbcSet(loaded.set),
+        challenge: plainSbcChallenge(loaded.challenge),
+        squad: plainSbcSquad(refreshedSquad),
+        saved_item_ids: params.item_ids.map(Number),
+        status: refreshed.status ?? null,
+      };
+    },
+
+    async submitSbc(params) {
+      const loaded = await findSbcChallenge(params.set_id, params.challenge_id);
+      const refreshed = await observeOnce(
+        loaded.appServices.SBC.sbcDAO.loadChallenge(
+          loaded.challenge.id,
+          typeof loaded.challenge.isInProgress === 'function' ? loaded.challenge.isInProgress() : true
+        )
+      );
+      const squad = refreshed.data?.squad ?? refreshed.response?.squad ?? null;
+      if (!squad) {
+        throw Object.assign(new Error(`SBC challenge ${params.challenge_id} has no saved squad.`), { code: 'SBC_SQUAD_UNAVAILABLE' });
+      }
+      loaded.challenge.squad = squad;
+      const savedIds = (typeof squad.getPlayers === 'function' ? squad.getPlayers() : [])
+        .map((entry) => typeof entry?.getItem === 'function' ? entry.getItem() : entry?.item)
+        .filter(Boolean)
+        .map((item) => Number(readValue(item, ['id', 'itemId'], ['getId'])));
+      const expectedIds = (params.item_ids || []).map(Number);
+      if (savedIds.length !== expectedIds.length || savedIds.some((itemId, index) => itemId !== expectedIds[index])) {
+        throw Object.assign(new Error('The saved SBC squad does not match the confirmed item order.'), {
+          code: 'SBC_SAVED_SQUAD_MISMATCH',
+          payload: { saved_item_ids: savedIds, expected_item_ids: expectedIds },
+        });
+      }
+      const chemistryEnabled = Boolean(loaded.appServices.Chemistry?.isFeatureEnabled?.());
+      const response = await observeOnce(
+        loaded.appServices.SBC.submitChallenge(
+          loaded.challenge,
+          loaded.set,
+          true,
+          chemistryEnabled
+        )
+      );
+      return {
+        submitted_item_ids: savedIds,
+        status: response.status ?? null,
+        success: response.success !== false,
+        data: plainValue(response.data ?? response.response ?? null, 0, new WeakSet(), 8),
+      };
     },
   };
 

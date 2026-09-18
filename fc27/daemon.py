@@ -17,6 +17,7 @@ from .mcp import MCPServer
 from .market import MarketService
 from .policy import PolicyStore
 from .runtime import RuntimeManager
+from .sbc import SbcService
 
 
 MAX_REQUEST_BYTES = 1024 * 1024
@@ -178,16 +179,31 @@ class FC27Daemon:
             if name == "sbc_query":
                 challenge_id = arguments.get("challenge_id")
                 set_id = arguments.get("set_id")
+                service = self._sbc_service()
+                if challenge_id is not None and set_id is None:
+                    raise FC27Error(
+                        "INVALID_REQUEST",
+                        "sbc_query requires set_id when challenge_id is provided.",
+                        recovery="Pass the set_id returned by the set or challenge-list query.",
+                    )
+                if arguments.get("live", True) is False:
+                    return self._envelope(
+                        "runtime",
+                        service.query(set_id=set_id, challenge_id=challenge_id),
+                    )
                 if challenge_id is not None:
-                    method = "getSbcChallenge"
-                    params = {"challenge_id": challenge_id, "set_id": set_id}
+                    raw = self._browser_tool(
+                        "getSbcChallenge",
+                        {"challenge_id": challenge_id, "set_id": set_id},
+                    )
+                    data = service.capture_challenge(raw)
                 elif set_id is not None:
-                    method = "getSbcChallenges"
-                    params = {"set_id": set_id}
+                    raw = self._browser_tool("getSbcChallenges", {"set_id": set_id})
+                    data = service.capture_challenges(raw)
                 else:
-                    method = "getSbcSets"
-                    params = {}
-                return self._envelope("ea_webapp", self._browser_tool(method, params))
+                    raw = self._browser_tool("getSbcSets", {})
+                    data = service.capture_sets(raw)
+                return self._envelope("ea_webapp", data)
             if name == "price_context":
                 if not self.accounts.active:
                     raise FC27Error(
@@ -214,10 +230,20 @@ class FC27Daemon:
                     card["catalog"] = catalog_by_id.get(card["card_ea_id"])
                 return self._envelope("futgg", data)
             if name == "sbc_solve":
-                raise FC27Error(
-                    "SBC_SCHEMA_UNSUPPORTED",
-                    "No authenticated FC27 SBC requirement schema has been captured yet.",
-                    recovery="Complete read-only SBC capture before requesting solutions.",
+                if not self.accounts.active:
+                    raise FC27Error(
+                        "ACCOUNT_NOT_INITIALIZED",
+                        "No EA Persona runtime database has been selected yet.",
+                        retryable=True,
+                        recovery="Run FC27:sync_club and FC27:sbc_query before solving.",
+                    )
+                return self._envelope(
+                    "runtime",
+                    self._sbc_service().solve(
+                        arguments.get("challenge_id"),
+                        arguments.get("objective") or {},
+                        arguments.get("max_solutions", 5),
+                    ),
                 )
             if name == "execute_actions":
                 if not self.accounts.active:
@@ -234,7 +260,7 @@ class FC27Daemon:
                         recovery="Run FC27:sync_club after login, then retry the exact batch.",
                     )
                 dispatcher = ActionDispatcher(
-                    self.bridge, self.accounts.active, self._sync_full
+                    self.bridge, self.accounts.active, self._sync_full, self.catalog
                 )
                 with self._execution_lock:
                     data = ExecutionService(
@@ -306,6 +332,16 @@ class FC27Daemon:
             return refresh_catalog(self.catalog.path)
         finally:
             self._catalog_refresh_lock.release()
+
+    def _sbc_service(self):
+        if not self.accounts.active:
+            raise FC27Error(
+                "ACCOUNT_NOT_INITIALIZED",
+                "No EA Persona runtime database has been selected yet.",
+                retryable=True,
+                recovery="Run FC27:sync_club after login, then retry the SBC request.",
+            )
+        return SbcService(self.accounts.active, self.catalog)
 
     def _envelope(self, source, data, complete=True):
         metadata = self.catalog.metadata()

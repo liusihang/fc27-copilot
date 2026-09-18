@@ -85,6 +85,21 @@ class CatalogDB:
                 "ok": integrity == "ok" and not foreign_keys and missing_primary == 0,
             }
 
+    def sbc_item_facts(self, card_ea_ids):
+        card_ea_ids = sorted({int(value) for value in card_ea_ids})
+        if not card_ea_ids:
+            return {}
+        placeholders = ",".join("?" for _ in card_ea_ids)
+        with self.connect() as connection:
+            rows = connection.execute(
+                f"""SELECT c.card_ea_id, c.overall, LOWER(c.quality) AS quality,
+                           c.club_id, c.league_id, p.nation_id
+                    FROM cards c JOIN players p USING(base_player_ea_id)
+                    WHERE c.card_ea_id IN ({placeholders})""",
+                card_ea_ids,
+            ).fetchall()
+        return {int(row["card_ea_id"]): dict(row) for row in rows}
+
     def query(self, request):
         request = request or {}
         filters = request.get("filters") or {}

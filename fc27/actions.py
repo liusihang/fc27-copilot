@@ -1,13 +1,15 @@
 import time
 
 from .errors import FC27Error
+from .sbc import SbcService
 
 
 class ActionDispatcher:
-    def __init__(self, bridge, runtime, sync_full):
+    def __init__(self, bridge, runtime, sync_full, catalog=None):
         self.bridge = bridge
         self.runtime = runtime
         self.sync_full = sync_full
+        self.catalog = catalog
 
     def __call__(self, action):
         method = getattr(self, f"_{action['type']}", None)
@@ -178,6 +180,82 @@ class ActionDispatcher:
     def _clear_sold(self, action):
         self._call("clearSold", {})
         return {"sync": self.sync_full("post_action")}
+
+    def _save_sbc_squad(self, action):
+        service = self._sbc_service()
+        validation = service.validate_solution(
+            action["solution_id"], self.runtime.account_summary()["last_full_sync_id"]
+        )
+        response = self._call(
+            "saveSbcSquad",
+            {
+                "set_id": action["set_id"],
+                "challenge_id": action["challenge_id"],
+                "item_ids": action["item_ids"],
+            },
+        )
+        saved_item_ids = [int(value) for value in response.get("saved_item_ids") or []]
+        if saved_item_ids != action["item_ids"]:
+            raise FC27Error(
+                "SBC_SAVE_READBACK_FAILED",
+                "EA SBC save readback did not preserve the exact confirmed item order.",
+                recovery="Do not submit. Reload the challenge and inspect its saved squad.",
+                details={"saved_item_ids": saved_item_ids},
+            )
+        captured = service.capture_challenge(response)
+        evidence = {
+            "saved_at_sync_id": self.runtime.account_summary()["last_full_sync_id"],
+            "saved_item_ids": saved_item_ids,
+            "ea_eligible": response.get("squad", {}).get("eligible") is True,
+            "ea": response,
+        }
+        self.runtime.update_sbc_solution_status(action["solution_id"], "saved", evidence)
+        return {"validation": validation["validation"], "capture": captured, **evidence}
+
+    def _submit_sbc(self, action):
+        service = self._sbc_service()
+        validation = service.validate_solution(
+            action["solution_id"], self.runtime.account_summary()["last_full_sync_id"]
+        )
+        response = self._call(
+            "submitSbc",
+            {
+                "set_id": action["set_id"],
+                "challenge_id": action["challenge_id"],
+                "item_ids": action["item_ids"],
+            },
+        )
+        sync = self.sync_full("post_sbc_submit")
+        remaining = {row["item_id"] for row in self.runtime.items_by_ids(action["item_ids"])}
+        if remaining:
+            raise FC27Error(
+                "SBC_SUBMIT_READBACK_FAILED",
+                "EA reported SBC submission but one or more confirmed items remain in inventory.",
+                recovery="Do not resubmit. Inspect the challenge and inventory state.",
+                details={"remaining_item_ids": sorted(remaining)},
+            )
+        challenge_response = self._call(
+            "getSbcChallenge",
+            {"set_id": action["set_id"], "challenge_id": action["challenge_id"]},
+        )
+        captured = service.capture_challenge(challenge_response)
+        evidence = {
+            "submitted_item_ids": action["item_ids"],
+            "ea": response,
+            "sync": sync,
+            "challenge": captured,
+        }
+        self.runtime.update_sbc_solution_status(action["solution_id"], "submitted", evidence)
+        return {"validation": validation["validation"], **evidence}
+
+    def _sbc_service(self):
+        if self.catalog is None:
+            raise FC27Error(
+                "SBC_SERVICE_UNAVAILABLE",
+                "SBC execution requires the catalog service.",
+                recovery="Initialize ActionDispatcher with the active catalog.",
+            )
+        return SbcService(self.runtime, self.catalog)
 
     def _call(self, method, params):
         response = self.bridge.call(method, params)

@@ -1,7 +1,7 @@
 import json
 
 
-SERVER_VERSION = "0.3.0"
+SERVER_VERSION = "0.4.0"
 
 
 def object_schema(properties, required=()):
@@ -27,7 +27,9 @@ ACTION_SCHEMA = {
         "duration": {"type": "integer", "minimum": 3600},
         "destination": {"type": "string", "enum": ["club", "tradepile"]},
         "challenge_id": {"type": ["integer", "string"]},
+        "set_id": {"type": ["integer", "string"]},
         "solution_id": {"type": "string"},
+        "item_ids": {"type": "array", "items": {"type": "integer"}, "minItems": 11, "maxItems": 11},
     },
     "required": ["action_id", "idempotency_key", "type"],
     "additionalProperties": True,
@@ -85,13 +87,13 @@ TOOLS = [
     },
     {
         "name": "sbc_query",
-        "description": "List FC27 SBC sets or return one challenge with current status and requirements through the authenticated browser bridge.",
-        "inputSchema": object_schema({"set_id": {"type": ["integer", "string", "null"]}, "challenge_id": {"type": ["integer", "string", "null"]}}),
+        "description": "Refresh and persist FC27 SBC sets or challenges from the authenticated Web App, then return normalized constraints, formation slots, rewards, status, expiry, raw evidence, and unsupported requirement reports. Use challenge_id with set_id for one challenge; use live=false to query only the local cache.",
+        "inputSchema": object_schema({"set_id": {"type": ["integer", "string", "null"]}, "challenge_id": {"type": ["integer", "string", "null"]}, "live": {"type": "boolean", "default": True}}),
         "annotations": {"readOnlyHint": True, "destructiveHint": False, "idempotentHint": False, "openWorldHint": True},
     },
     {
         "name": "sbc_solve",
-        "description": "Generate locally validated candidate SBC squads from exact owned item IDs under a caller-supplied objective. This tool never saves or submits.",
+        "description": "Generate and persist multiple deterministic exact-item SBC candidates from the latest owned-item mirror under caller limits. It excludes protected, missing, loan, duplicate, and explicitly excluded items; returns validation evidence; and refuses unsupported challenge constraints. It never saves or submits.",
         "inputSchema": object_schema({"challenge_id": {"type": ["integer", "string"]}, "objective": {"type": "object"}, "max_solutions": {"type": "integer", "minimum": 1, "maximum": 10, "default": 5}}, ["challenge_id"]),
         "annotations": {"readOnlyHint": True, "destructiveHint": False, "idempotentHint": False, "openWorldHint": False},
     },

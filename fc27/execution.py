@@ -7,6 +7,7 @@ from .policy import ACTION_TYPES
 
 PURCHASE_TYPES = ("buy_now", "place_bid")
 ITEM_TYPES = ("list_item", "move_item")
+SBC_TYPES = ("save_sbc_squad", "submit_sbc")
 
 
 def utc_now():
@@ -192,6 +193,51 @@ class ExecutionService:
                 )
             if item_id is not None and item_id in protected:
                 self._policy_denied(f"Item {item_id} is protected.")
+            if action["type"] in SBC_TYPES:
+                solution = self.runtime.get_sbc_solution(action["solution_id"])
+                if solution is None:
+                    raise FC27Error(
+                        "SBC_SOLUTION_NOT_FOUND",
+                        f"SBC solution {action['solution_id']} was not found.",
+                    )
+                if str(solution["challenge_id"]) != str(action["challenge_id"]):
+                    raise FC27Error("INVALID_ACTION", "SBC solution and challenge_id do not match.")
+                if solution["item_ids"] != action["item_ids"]:
+                    raise FC27Error("INVALID_ACTION", "SBC action item_ids must exactly match the persisted solution order.")
+                missing = [value for value in action["item_ids"] if value not in item_rows]
+                if missing:
+                    raise FC27Error(
+                        "ITEM_NOT_FOUND",
+                        "One or more SBC solution items are absent from the latest complete state.",
+                        recovery="Sync the club and generate a new solution.",
+                        details={"missing_item_ids": missing},
+                    )
+                denied = sorted(set(action["item_ids"]) & protected)
+                if denied:
+                    self._policy_denied(f"SBC solution contains protected items: {denied}.")
+                if action["type"] == "submit_sbc" and solution["status"] != "saved":
+                    raise FC27Error(
+                        "SBC_NOT_ELIGIBLE",
+                        "SBC submission requires a solution with saved EA readback evidence.",
+                        recovery="Save and reread the exact solution before submitting it.",
+                    )
+                if action["type"] == "submit_sbc":
+                    execution_evidence = solution.get("validation", {}).get("execution", {})
+                    saved_sync_id = execution_evidence.get("saved_at_sync_id")
+                    if saved_sync_id != expected_sync_id:
+                        raise FC27Error(
+                            "STALE_CLUB_STATE",
+                            "The saved SBC squad was not read back against the current complete sync.",
+                            retryable=True,
+                            recovery="Regenerate and save the exact solution against the current sync before submitting.",
+                            details={"saved_sync_id": saved_sync_id, "expected_sync_id": expected_sync_id},
+                        )
+                    if execution_evidence.get("ea_eligible") is not True:
+                        raise FC27Error(
+                            "SBC_NOT_ELIGIBLE",
+                            "The saved SBC squad does not have positive EA eligibility readback.",
+                            recovery="Inspect failed EA requirements, generate a new solution, and save it again.",
+                        )
             if action["type"] == "list_item" and not item["tradeable"]:
                 self._policy_denied(f"Item {item_id} is untradeable and cannot be listed.")
             if action["type"] in PURCHASE_TYPES:
@@ -310,6 +356,21 @@ class ExecutionService:
             normalized["duration"] = int(normalized.get("duration", 3600))
             if normalized["duration"] < 3600:
                 raise FC27Error("INVALID_ACTION", "duration must be at least 3600 seconds.")
+        if action_type in SBC_TYPES:
+            for key in ("set_id", "challenge_id", "solution_id"):
+                if normalized.get(key) in (None, ""):
+                    raise FC27Error("INVALID_ACTION", f"{action_type} requires {key}.")
+            normalized["set_id"] = str(normalized["set_id"])
+            normalized["challenge_id"] = str(normalized["challenge_id"])
+            item_ids = normalized.get("item_ids")
+            if not isinstance(item_ids, list) or len(item_ids) != 11:
+                raise FC27Error("INVALID_ACTION", f"{action_type} requires exactly 11 ordered item_ids.")
+            try:
+                normalized["item_ids"] = [int(value) for value in item_ids]
+            except (TypeError, ValueError) as error:
+                raise FC27Error("INVALID_ACTION", "SBC item_ids must be integers.") from error
+            if len(set(normalized["item_ids"])) != 11:
+                raise FC27Error("INVALID_ACTION", "SBC item_ids must be unique.")
         return normalized
 
     def _insert_audit(self, request, actions, execution_mode):

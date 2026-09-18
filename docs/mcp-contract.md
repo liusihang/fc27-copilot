@@ -98,11 +98,11 @@ Returns current and historical FUT.GG prices, EA scan history, holdings, listed 
 
 ### `FC27:sbc_query`
 
-Lists cached/live SBC sets or returns one challenge with raw and normalized requirements, current status, slots, and source observation time.
+Refreshes and persists live SBC sets/challenges or reads the local cache. It returns raw evidence, normalized constraints, formation slots, rewards, status, expiry, repeatability, observation time, and explicit unsupported-constraint reports.
 
 ### `FC27:sbc_solve`
 
-Generates locally validated candidate squads from exact owned item IDs under a caller-provided objective. It returns multiple candidates and validation evidence. It never saves or submits.
+Generates and persists multiple exact-item candidates from the latest owned-item mirror under a caller-provided objective. Protected, loan, stale, duplicate, Tradepile, and explicitly excluded items are rejected. It returns the exact slot order and validation evidence and never saves or submits.
 
 ### `FC27:execute_actions`
 

@@ -587,6 +587,263 @@ class RuntimeDB:
             connection.commit()
         return reconciled
 
+    def upsert_sbc_sets(self, sets):
+        with self.connect() as connection:
+            for value in sets:
+                connection.execute(
+                    """INSERT INTO sbc_sets(
+                         set_id, name, status, expires_at, observed_at, raw_json
+                       ) VALUES (?, ?, ?, ?, ?, ?)
+                       ON CONFLICT(set_id) DO UPDATE SET
+                         name = excluded.name,
+                         status = excluded.status,
+                         expires_at = excluded.expires_at,
+                         observed_at = excluded.observed_at,
+                         raw_json = excluded.raw_json""",
+                    (
+                        value["set_id"],
+                        value["name"],
+                        value.get("status"),
+                        value.get("expires_at"),
+                        value["observed_at"],
+                        json.dumps(
+                            {
+                                "repeatable": value["repeatable"],
+                                "challenge_count": value["challenge_count"],
+                                "completed_count": value["completed_count"],
+                                "times_completed": value["times_completed"],
+                                "rewards": value["rewards"],
+                                "raw": value["raw"],
+                            },
+                            ensure_ascii=False,
+                            separators=(",", ":"),
+                            sort_keys=True,
+                        ),
+                    ),
+                )
+            connection.commit()
+
+    def upsert_sbc_challenges(self, challenges):
+        with self.connect() as connection:
+            for value in challenges:
+                connection.execute(
+                    """INSERT INTO sbc_challenges(
+                         challenge_id, set_id, name, status, repeatable,
+                         requirements_json, observed_at, raw_json
+                       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                       ON CONFLICT(challenge_id) DO UPDATE SET
+                         set_id = excluded.set_id,
+                         name = excluded.name,
+                         status = excluded.status,
+                         repeatable = excluded.repeatable,
+                         requirements_json = excluded.requirements_json,
+                         observed_at = excluded.observed_at,
+                         raw_json = excluded.raw_json""",
+                    (
+                        value["challenge_id"],
+                        value["set_id"],
+                        value["name"],
+                        value.get("status"),
+                        1 if value["repeatable"] else 0,
+                        json.dumps(
+                            {
+                                "constraints": value["constraints"],
+                                "unsupported_constraints": value["unsupported_constraints"],
+                            },
+                            ensure_ascii=False,
+                            separators=(",", ":"),
+                            sort_keys=True,
+                        ),
+                        value["observed_at"],
+                        json.dumps(
+                            {
+                                "completed": value["completed"],
+                                "expires_at": value["expires_at"],
+                                "formation": value["formation"],
+                                "slots": value["slots"],
+                                "rewards": value["rewards"],
+                                "raw": value["raw"],
+                            },
+                            ensure_ascii=False,
+                            separators=(",", ":"),
+                            sort_keys=True,
+                        ),
+                    ),
+                )
+            connection.commit()
+
+    def query_sbcs(self, *, set_id=None, challenge_id=None):
+        with self.connect() as connection:
+            if challenge_id is not None:
+                row = connection.execute(
+                    "SELECT * FROM sbc_challenges WHERE challenge_id = ?",
+                    (str(challenge_id),),
+                ).fetchone()
+                return {"challenge": self._decode_sbc_challenge(row) if row else None}
+            if set_id is not None:
+                set_row = connection.execute(
+                    "SELECT * FROM sbc_sets WHERE set_id = ?", (str(set_id),)
+                ).fetchone()
+                challenges = connection.execute(
+                    "SELECT * FROM sbc_challenges WHERE set_id = ? ORDER BY challenge_id",
+                    (str(set_id),),
+                ).fetchall()
+                return {
+                    "set": self._decode_sbc_set(set_row) if set_row else None,
+                    "challenges": [self._decode_sbc_challenge(row) for row in challenges],
+                }
+            rows = connection.execute("SELECT * FROM sbc_sets ORDER BY set_id").fetchall()
+        return {"sets": [self._decode_sbc_set(row) for row in rows]}
+
+    def get_sbc_challenge(self, challenge_id):
+        return self.query_sbcs(challenge_id=challenge_id)["challenge"]
+
+    def sbc_candidate_items(self, candidate_item_ids=None, exclude_item_ids=None):
+        where = ["location IN ('club', 'storage', 'unassigned')"]
+        params = []
+        if candidate_item_ids:
+            ids = [int(value) for value in candidate_item_ids]
+            where.append(f"item_id IN ({','.join('?' for _ in ids)})")
+            params.extend(ids)
+        if exclude_item_ids:
+            ids = [int(value) for value in exclude_item_ids]
+            where.append(f"item_id NOT IN ({','.join('?' for _ in ids)})")
+            params.extend(ids)
+        with self.connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM club_items WHERE " + " AND ".join(where) + " ORDER BY item_id",
+                params,
+            ).fetchall()
+        result = []
+        for row in rows:
+            value = dict(row)
+            value["tradeable"] = bool(value["tradeable"])
+            value["protected"] = bool(value["protected"])
+            if value["protected"] or value["loan_uses_remaining"] not in (None, -1):
+                continue
+            result.append(value)
+        return result
+
+    def items_by_ids(self, item_ids):
+        ids = [int(value) for value in item_ids]
+        if not ids:
+            return []
+        with self.connect() as connection:
+            rows = connection.execute(
+                f"SELECT * FROM club_items WHERE item_id IN ({','.join('?' for _ in ids)})",
+                ids,
+            ).fetchall()
+        by_id = {int(row["item_id"]): dict(row) for row in rows}
+        return [by_id[item_id] for item_id in ids if item_id in by_id]
+
+    def latest_reference_price(self, card_ea_id):
+        with self.connect() as connection:
+            account = connection.execute(
+                "SELECT platform FROM account_state WHERE persona_id = ?",
+                (self.persona_id,),
+            ).fetchone()
+            row = connection.execute(
+                """SELECT price FROM reference_prices
+                   WHERE card_ea_id = ? AND platform = ? AND price IS NOT NULL
+                   ORDER BY observed_at DESC LIMIT 1""",
+                (int(card_ea_id), account["platform"] if account else "pc"),
+            ).fetchone()
+        return int(row["price"]) if row else None
+
+    def save_sbc_solution(self, solution):
+        with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            connection.execute(
+                """INSERT INTO sbc_solutions(
+                     solution_id, challenge_id, created_at, estimated_cost,
+                     tradeable_value, objective_json, validation_json, status
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(solution_id) DO UPDATE SET
+                     estimated_cost = excluded.estimated_cost,
+                     tradeable_value = excluded.tradeable_value,
+                     objective_json = excluded.objective_json,
+                     validation_json = excluded.validation_json,
+                     status = excluded.status""",
+                (
+                    solution["solution_id"],
+                    solution["challenge_id"],
+                    solution["created_at"],
+                    solution["estimated_cost"],
+                    solution["tradeable_value"],
+                    json.dumps(solution["objective"], ensure_ascii=False, separators=(",", ":"), sort_keys=True),
+                    json.dumps(solution["validation"], ensure_ascii=False, separators=(",", ":"), sort_keys=True),
+                    solution["status"],
+                ),
+            )
+            connection.execute(
+                "DELETE FROM sbc_solution_items WHERE solution_id = ?",
+                (solution["solution_id"],),
+            )
+            connection.executemany(
+                "INSERT INTO sbc_solution_items(solution_id, slot_index, item_id) VALUES (?, ?, ?)",
+                [
+                    (solution["solution_id"], row["slot_index"], row["item_id"])
+                    for row in solution["slots"]
+                ],
+            )
+            connection.commit()
+
+    def get_sbc_solution(self, solution_id):
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM sbc_solutions WHERE solution_id = ?", (solution_id,)
+            ).fetchone()
+            if row is None:
+                return None
+            items = connection.execute(
+                """SELECT slot_index, item_id FROM sbc_solution_items
+                   WHERE solution_id = ? ORDER BY slot_index""",
+                (solution_id,),
+            ).fetchall()
+        result = dict(row)
+        result["objective"] = json.loads(result.pop("objective_json"))
+        result["validation"] = json.loads(result.pop("validation_json"))
+        result["item_ids"] = [int(value["item_id"]) for value in items]
+        result["slots"] = [dict(value) for value in items]
+        return result
+
+    def update_sbc_solution_status(self, solution_id, status, evidence):
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT validation_json FROM sbc_solutions WHERE solution_id = ?",
+                (solution_id,),
+            ).fetchone()
+            if row is None:
+                raise FC27Error("SBC_SOLUTION_NOT_FOUND", f"SBC solution {solution_id} was not found.")
+            validation = json.loads(row["validation_json"])
+            validation["execution"] = evidence
+            connection.execute(
+                "UPDATE sbc_solutions SET status = ?, validation_json = ? WHERE solution_id = ?",
+                (
+                    status,
+                    json.dumps(validation, ensure_ascii=False, separators=(",", ":"), sort_keys=True),
+                    solution_id,
+                ),
+            )
+            connection.commit()
+
+    @staticmethod
+    def _decode_sbc_set(row):
+        value = dict(row)
+        raw = json.loads(value.pop("raw_json"))
+        value.update(raw)
+        return value
+
+    @staticmethod
+    def _decode_sbc_challenge(row):
+        value = dict(row)
+        requirements = json.loads(value.pop("requirements_json"))
+        raw = json.loads(value.pop("raw_json"))
+        value["repeatable"] = bool(value["repeatable"])
+        value.update(requirements)
+        value.update(raw)
+        return value
+
     def _validate_schema(self, connection):
         try:
             version = connection.execute(

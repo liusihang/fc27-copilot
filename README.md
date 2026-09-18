@@ -2,7 +2,7 @@
 
 本项目把 FC27 Web App 会话桥接、FUT.GG 球员目录与价格数据、本地俱乐部镜像和 OpenClaw MCP 整合为一个本地系统。
 
-当前状态：M1–M5 已完成目录、俱乐部镜像、登录后只读验收、市场信息能力和受控执行。真实账户低价值验收已通过；系统运行在需要逐批明确确认的 `suggest` 模式，`auto` 模式仍关闭。
+当前状态：M1–M5 已完成；M6 已完成 SBC 实时结构捕获、本地候选求解以及保存/提交接口的 fixture 验证。真实 SBC 保存与提交等待精确球员清单确认；系统仍运行在逐批确认的 `suggest` 模式，`auto` 模式关闭。
 
 ## 设计边界
 
@@ -27,6 +27,8 @@
 - [OpenClaw 集成](docs/openclaw.md)
 - [执行策略](docs/execution-policy.md)
 - [M5 真实账户验收](docs/live-execution-acceptance-2026-09-18.md)
+- [SBC 契约](docs/sbc-contract.md)
+- [SBC 只读与本地求解验收](docs/sbc-read-only-acceptance-2026-09-18.md)
 - [来源清单](docs/source-artifacts.md)
 - [交接记录](handoff.md)
 
