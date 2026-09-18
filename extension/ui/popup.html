@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>FC27 Copilot</title>
+  <link rel="stylesheet" href="popup.css" />
+</head>
+<body>
+  <main>
+    <h1>FC27 Copilot <span>Bridge</span></h1>
+    <p class="sub">Session status only. Strategy, policy, persistence, and MCP run in fc27d.</p>
+
+    <section>
+      <div class="row"><b>Web App</b><span id="webapp" class="badge">Checking</span></div>
+      <div class="row"><b>Session</b><span id="session" class="badge">Checking</span></div>
+      <div class="kv"><span>Game</span><code id="game">—</code></div>
+      <div class="kv"><span>API host</span><code id="host">—</code></div>
+      <div class="kv"><span>API base</span><code id="base">—</code></div>
+      <div class="kv"><span>SID captured</span><code id="sid">—</code></div>
+      <div class="kv"><span>Phishing token</span><code id="phishing">—</code></div>
+    </section>
+
+    <section>
+      <div class="row"><b>fc27d bridge</b><span>127.0.0.1:3926</span></div>
+      <div id="lastError" class="error"></div>
+    </section>
+
+    <button id="refresh">Refresh</button>
+  </main>
+  <script src="popup.js"></script>
+</body>
+</html>

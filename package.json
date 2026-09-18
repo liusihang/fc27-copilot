@@ -1,0 +1,13 @@
+{
+  "name": "fc27-copilot",
+  "version": "0.3.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build:extension": "node scripts/build.js",
+    "validate:extension": "node scripts/validate-extension.js"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

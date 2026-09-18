@@ -1,0 +1,38 @@
+{
+  "manifest_version": 3,
+  "name": "FC27 Copilot Bridge",
+  "version": "0.3.0",
+  "description": "Thin localhost bridge for the authenticated EA SPORTS FC 27 Ultimate Team Web App.",
+  "permissions": [
+    "storage",
+    "tabs"
+  ],
+  "host_permissions": [
+    "https://www.ea.com/*",
+    "https://*.ea.com/*"
+  ],
+  "background": {
+    "service_worker": "background/service-worker.js",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://www.ea.com/ea-sports-fc/ultimate-team/web-app/*"],
+      "js": ["content/content-script.js"],
+      "run_at": "document_start"
+    }
+  ],
+  "externally_connectable": {
+    "matches": ["http://localhost/*", "http://127.0.0.1/*"]
+  },
+  "web_accessible_resources": [
+    {
+      "resources": ["content/page-inject.js"],
+      "matches": ["https://www.ea.com/*"]
+    }
+  ],
+  "action": {
+    "default_popup": "ui/popup.html",
+    "default_title": "FC27 Copilot Bridge"
+  }
+}

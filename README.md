@@ -46,7 +46,7 @@ python3 fc27d.py
 - `GET /browser/poll`、`POST /browser/respond`：Chrome 桥接长轮询；
 - `GET /`：浏览器桥接页面。
 
-守护进程只绑定回环地址。通过 `FC27D_HOST` 和 `FC27D_PORT` 可以显式修改监听地址和端口。
+守护进程和 Chrome 桥接默认使用固定地址 `127.0.0.1:3926`。
 
 ## 声明
 

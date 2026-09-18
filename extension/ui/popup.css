@@ -1,0 +1,19 @@
+:root { font-family: Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color-scheme: dark; }
+body { margin: 0; width: 390px; background: #111318; color: #f4f5f7; }
+main { padding: 16px; }
+h1 { font-size: 20px; margin: 0 0 4px; }
+h1 span { font-size: 11px; font-weight: 700; background: #2b3340; padding: 3px 6px; border-radius: 6px; vertical-align: 3px; }
+.sub { margin: 0 0 14px; color: #aeb6c2; font-size: 12px; line-height: 1.45; }
+section { border: 1px solid #2b3038; background: #191c22; border-radius: 10px; padding: 12px; margin: 10px 0; }
+.row, .kv { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 7px 0; }
+.kv span { color: #aeb6c2; font-size: 12px; flex: 0 0 78px; }
+code { color: #d7e2f0; font-size: 11px; overflow-wrap: anywhere; text-align: right; }
+.badge { padding: 3px 7px; border-radius: 999px; font-size: 11px; background: #3b414b; }
+.badge.ok { background: #174b2a; color: #a9f2bf; }
+.badge.bad { background: #55222b; color: #ffbdc5; }
+.toggle { display: flex; align-items: center; gap: 9px; margin: 9px 0; font-size: 13px; }
+.toggle input { width: 17px; height: 17px; }
+.toggle.danger { color: #ffd4d8; }
+.warning { color: #d6bd83; font-size: 11px; line-height: 1.45; margin-bottom: 0; }
+.error { color: #ffb1bb; font-size: 11px; line-height: 1.4; overflow-wrap: anywhere; }
+button { width: 100%; border: 0; border-radius: 8px; padding: 10px; font-weight: 700; background: #edf2f8; color: #101217; cursor: pointer; }
