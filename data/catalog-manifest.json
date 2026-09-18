@@ -1,0 +1,41 @@
+{
+  "checks": {
+    "foreign_key_errors": 0,
+    "integrity": "ok",
+    "primary_positions": 19676,
+    "unique_card_ea_ids": 19676,
+    "unique_futgg_ids": 19676,
+    "unmapped_playstyles": 0,
+    "unmapped_roles": 0
+  },
+  "counts": {
+    "card_playstyles": 18256,
+    "card_positions": 44423,
+    "card_roles": 47258,
+    "cards": 19676,
+    "clubs": 698,
+    "leagues": 65,
+    "nations": 164,
+    "players": 19595,
+    "playstyles": 36,
+    "positions": 12,
+    "rarities": 11,
+    "roles": 49
+  },
+  "errors": [],
+  "metadata": {
+    "card_count": "19676",
+    "game_year": "27",
+    "manifest_hash": "",
+    "manifest_version": "",
+    "player_count": "19595",
+    "schema_version": "3",
+    "snapshot_finished_at": "2026-09-17T17:06:37Z",
+    "snapshot_started_at": "2026-09-17T17:03:36Z",
+    "source": "FUT.GG"
+  },
+  "ok": true,
+  "path": "data/catalog.sqlite",
+  "sha256": "eb6df656394c0a66139e51276a4f444eabdc5f7e80aff14ffbe01f1fed6f2e6f",
+  "size_bytes": 19288064
+}
