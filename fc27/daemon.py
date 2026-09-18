@@ -8,6 +8,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from .bridge import BrowserBridge
+from .account import AccountReader
 from .catalog import CatalogDB
 from .errors import FC27Error
 from .mcp import MCPServer
@@ -76,7 +77,16 @@ class FC27Daemon:
             if name == "club_query":
                 account = self.accounts.status()
                 if account:
-                    return self._envelope("runtime", {"account": account, "items": [], "count": 0})
+                    data = self.accounts.active.query_items(arguments)
+                    if arguments.get("include_catalog", True) and data["items"]:
+                        card_ids = sorted({item["card_ea_id"] for item in data["items"]})
+                        catalog = self.catalog.query(
+                            {"card_ea_ids": card_ids, "limit": len(card_ids), "detail": "summary"}
+                        )
+                        by_id = {card["card_ea_id"]: card for card in catalog["cards"]}
+                        for item in data["items"]:
+                            item["catalog"] = by_id.get(item["card_ea_id"])
+                    return self._envelope("runtime", data)
                 raise FC27Error(
                     "ACCOUNT_NOT_INITIALIZED",
                     "No EA Persona runtime database has been selected yet.",
@@ -91,13 +101,43 @@ class FC27Daemon:
                         retryable=True,
                         recovery="Start fc27d, connect the extension at http://127.0.0.1:3926, log in to FC27, then retry.",
                     )
-                identity = self._browser_tool("getIdentity", {})
+                mode = arguments.get("mode", "full")
+                if mode != "full":
+                    raise FC27Error(
+                        "TARGETED_SYNC_NOT_READY",
+                        "Targeted synchronization is introduced with post-action readback.",
+                        recovery="Use mode=full until execution workflows are enabled.",
+                    )
+                required = ("coins", "club", "storage", "unassigned", "tradepile")
+                requested = tuple(arguments.get("areas") or required)
+                missing = [area for area in required if area not in requested]
+                if missing:
+                    raise FC27Error(
+                        "INVALID_FULL_SYNC_AREAS",
+                        f"Full synchronization requires: {', '.join(missing)}.",
+                        recovery="Include coins, club, storage, unassigned, and tradepile.",
+                    )
+                reader = AccountReader(self.bridge)
+                identity = reader.identity()
                 account = self.accounts.activate(identity)
-                raise FC27Error(
-                    "ACCOUNT_SYNC_NOT_READY",
-                    f"Persona {account['persona_id']} is selected; inventory synchronization is implemented in the next M3 issues.",
-                    retryable=False,
-                    recovery="Complete the read-only browser acceptance before enabling account synchronization.",
+                runtime = self.accounts.active
+                sync_id = runtime.begin_sync("login_full")
+                results = {}
+                for area in requested:
+                    try:
+                        result = reader.read_area(area)
+                        results[area] = result
+                        runtime.record_sync_part(sync_id, result)
+                    except FC27Error as error:
+                        runtime.fail_sync(sync_id, error, area)
+                        raise
+                try:
+                    summary = runtime.commit_full_sync(sync_id, results, required)
+                except FC27Error as error:
+                    runtime.fail_sync(sync_id, error)
+                    raise
+                return self._envelope(
+                    "ea_webapp", {"account": runtime.account_summary(), **summary}
                 )
             if name == "market_search":
                 data = self._browser_tool("searchTransferMarket", {
@@ -169,6 +209,7 @@ class FC27Daemon:
 
     def _envelope(self, source, data, complete=True):
         metadata = self.catalog.metadata()
+        account = self.accounts.status()
         return {
             "ok": True,
             "meta": {
@@ -177,13 +218,14 @@ class FC27Daemon:
                 "source": source,
                 "complete": complete,
                 "catalog_snapshot_at": metadata.get("snapshot_finished_at"),
-                "club_sync_id": None,
+                "club_sync_id": account.get("last_full_sync_id") if account else None,
             },
             "data": data,
         }
 
     def _error_envelope(self, error):
         metadata = self.catalog.metadata()
+        account = self.accounts.status()
         return {
             "ok": False,
             "meta": {
@@ -192,7 +234,7 @@ class FC27Daemon:
                 "source": "fc27d",
                 "complete": False,
                 "catalog_snapshot_at": metadata.get("snapshot_finished_at"),
-                "club_sync_id": None,
+                "club_sync_id": account.get("last_full_sync_id") if account else None,
             },
             "error": error.as_dict(),
         }

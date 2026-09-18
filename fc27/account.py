@@ -15,9 +15,13 @@ class AccountReader:
     def read(self, areas):
         results = {}
         for area in areas:
-            if area == "coins":
-                payload = self._call("getCoinBalance", {})
-                results[area] = {
+            results[area] = self.read_area(area)
+        return results
+
+    def read_area(self, area):
+        if area == "coins":
+            payload = self._call("getCoinBalance", {})
+            return {
                     "area": area,
                     "page_count": 1,
                     "item_count": 0,
@@ -25,24 +29,22 @@ class AccountReader:
                     "coin_balance": self._coin_balance(payload),
                     "items": [],
                     "listings": [],
-                }
-            elif area == "club":
-                results[area] = self._read_pages(area, "getClubPage", "start")
-            elif area == "storage":
-                results[area] = self._read_pages(area, "getStoragePage", "offset")
-            elif area == "unassigned":
-                results[area] = self._read_single(area, "getUnassigned")
-            elif area == "tradepile":
-                results[area] = self._read_single(area, "getTradepile")
-            elif area == "watchlist":
-                results[area] = self._read_single(area, "getWatchlist")
-            else:
-                raise FC27Error(
-                    "INVALID_SYNC_AREA",
-                    f"Unsupported account sync area: {area}",
-                    recovery="Use coins, club, storage, unassigned, tradepile, or watchlist.",
-                )
-        return results
+            }
+        if area == "club":
+            return self._read_pages(area, "getClubPage", "start")
+        if area == "storage":
+            return self._read_pages(area, "getStoragePage", "offset")
+        if area == "unassigned":
+            return self._read_single(area, "getUnassigned")
+        if area == "tradepile":
+            return self._read_single(area, "getTradepile")
+        if area == "watchlist":
+            return self._read_single(area, "getWatchlist")
+        raise FC27Error(
+            "INVALID_SYNC_AREA",
+            f"Unsupported account sync area: {area}",
+            recovery="Use coins, club, storage, unassigned, tradepile, or watchlist.",
+        )
 
     def _read_pages(self, area, method, offset_name):
         offset = 0

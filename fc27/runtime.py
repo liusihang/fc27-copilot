@@ -1,5 +1,7 @@
 import re
 import sqlite3
+import json
+from datetime import datetime, timezone
 from pathlib import Path
 
 from .errors import FC27Error
@@ -7,6 +9,11 @@ from .schema import RUNTIME_SCHEMA, RUNTIME_SCHEMA_VERSION
 
 
 PERSONA_ID_PATTERN = re.compile(r"^[A-Za-z0-9._-]+$")
+OWNED_AREAS = ("club", "storage", "unassigned", "tradepile")
+
+
+def utc_now():
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
 class RuntimeDB:
@@ -68,6 +75,260 @@ class RuntimeDB:
         result = dict(row)
         result["runtime_path"] = str(self.path)
         return result
+
+    def begin_sync(self, kind="login_full"):
+        with self.connect() as connection:
+            cursor = connection.execute(
+                "INSERT INTO sync_runs(kind, started_at, status) VALUES (?, ?, 'running')",
+                (kind, utc_now()),
+            )
+            connection.commit()
+            return cursor.lastrowid
+
+    def record_sync_part(self, sync_id, result):
+        with self.connect() as connection:
+            connection.execute(
+                """INSERT INTO sync_parts(sync_id, area, page_count, item_count, complete, error_code)
+                   VALUES (?, ?, ?, ?, ?, NULL)
+                   ON CONFLICT(sync_id, area) DO UPDATE SET
+                     page_count = excluded.page_count,
+                     item_count = excluded.item_count,
+                     complete = excluded.complete,
+                     error_code = NULL""",
+                (
+                    sync_id,
+                    result["area"],
+                    result["page_count"],
+                    result["item_count"],
+                    1 if result["complete"] else 0,
+                ),
+            )
+            connection.commit()
+
+    def fail_sync(self, sync_id, error, area=None):
+        with self.connect() as connection:
+            if area:
+                connection.execute(
+                    """INSERT INTO sync_parts(sync_id, area, complete, error_code)
+                       VALUES (?, ?, 0, ?)
+                       ON CONFLICT(sync_id, area) DO UPDATE SET complete = 0, error_code = excluded.error_code""",
+                    (sync_id, area, error.code),
+                )
+            connection.execute(
+                """UPDATE sync_runs SET finished_at = ?, status = 'failed',
+                     error_code = ?, error_message = ? WHERE sync_id = ?""",
+                (utc_now(), error.code, error.message, sync_id),
+            )
+            connection.commit()
+
+    def commit_full_sync(self, sync_id, results, required_areas):
+        required_areas = tuple(required_areas)
+        missing = [
+            area
+            for area in required_areas
+            if area not in results or not results[area].get("complete")
+        ]
+        if missing:
+            raise FC27Error(
+                "SYNC_INCOMPLETE",
+                f"Required sync areas are incomplete: {', '.join(missing)}.",
+                retryable=True,
+                recovery="Retry a full sync and inspect the failed areas.",
+            )
+        observed_at = utc_now()
+        new_items = {}
+        for area in OWNED_AREAS:
+            for item in (results.get(area) or {}).get("items", []):
+                item_id = item["item_id"]
+                if item_id in new_items:
+                    raise FC27Error(
+                        "DUPLICATE_ITEM_ACROSS_AREAS",
+                        f"Item {item_id} appeared in both {new_items[item_id]['location']} and {area}.",
+                        recovery="Inspect area responses before accepting this sync.",
+                    )
+                new_items[item_id] = item
+
+        with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            parts = {
+                row["area"]: row
+                for row in connection.execute(
+                    "SELECT * FROM sync_parts WHERE sync_id = ?", (sync_id,)
+                )
+            }
+            invalid = [
+                area for area in required_areas if area not in parts or not parts[area]["complete"]
+            ]
+            if invalid:
+                connection.rollback()
+                raise FC27Error(
+                    "SYNC_INCOMPLETE",
+                    f"Persisted sync parts are incomplete: {', '.join(invalid)}.",
+                    retryable=True,
+                    recovery="Retry the full sync; current inventory was not changed.",
+                )
+            old_items = {
+                row["item_id"]: dict(row)
+                for row in connection.execute("SELECT * FROM club_items")
+            }
+            for item_id, item in new_items.items():
+                old = old_items.get(item_id)
+                acquisition_cost = (
+                    old["acquisition_cost"]
+                    if old and old["acquisition_cost"] is not None
+                    else item.get("acquisition_cost")
+                )
+                first_seen_at = old["first_seen_at"] if old else observed_at
+                protected = old["protected"] if old else 0
+                connection.execute(
+                    """INSERT INTO club_items(
+                         item_id, card_ea_id, location, tradeable,
+                         loan_uses_remaining, acquisition_cost, protected,
+                         first_seen_at, last_seen_at, last_sync_id
+                       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                       ON CONFLICT(item_id) DO UPDATE SET
+                         card_ea_id = excluded.card_ea_id,
+                         location = excluded.location,
+                         tradeable = excluded.tradeable,
+                         loan_uses_remaining = excluded.loan_uses_remaining,
+                         acquisition_cost = excluded.acquisition_cost,
+                         last_seen_at = excluded.last_seen_at,
+                         last_sync_id = excluded.last_sync_id""",
+                    (
+                        item_id,
+                        item["card_ea_id"],
+                        item["location"],
+                        1 if item["tradeable"] else 0,
+                        item.get("loan_uses_remaining"),
+                        acquisition_cost,
+                        protected,
+                        first_seen_at,
+                        observed_at,
+                        sync_id,
+                    ),
+                )
+                change_type = None
+                details = None
+                if old is None:
+                    change_type = "added"
+                elif old["location"] != item["location"]:
+                    change_type = "moved"
+                else:
+                    changed = {
+                        key: [old[key], value]
+                        for key, value in (
+                            ("card_ea_id", item["card_ea_id"]),
+                            ("tradeable", 1 if item["tradeable"] else 0),
+                            ("loan_uses_remaining", item.get("loan_uses_remaining")),
+                        )
+                        if old[key] != value
+                    }
+                    if changed:
+                        change_type = "attributes_changed"
+                        details = json.dumps(changed, separators=(",", ":"), sort_keys=True)
+                if change_type:
+                    connection.execute(
+                        """INSERT INTO inventory_changes(
+                             sync_id, item_id, change_type, from_location, to_location, details_json
+                           ) VALUES (?, ?, ?, ?, ?, ?)""",
+                        (
+                            sync_id,
+                            item_id,
+                            change_type,
+                            old["location"] if old else None,
+                            item["location"],
+                            details,
+                        ),
+                    )
+
+            removed_ids = sorted(set(old_items) - set(new_items))
+            for item_id in removed_ids:
+                old = old_items[item_id]
+                connection.execute(
+                    """INSERT INTO inventory_changes(
+                         sync_id, item_id, change_type, from_location, to_location
+                       ) VALUES (?, ?, 'removed', ?, NULL)""",
+                    (sync_id, item_id, old["location"]),
+                )
+                connection.execute("DELETE FROM club_items WHERE item_id = ?", (item_id,))
+
+            for result in results.values():
+                for listing in result.get("listings", []):
+                    if listing.get("trade_id") is None or listing.get("item_id") is None:
+                        continue
+                    connection.execute(
+                        """INSERT INTO trade_listings(
+                             trade_id, item_id, starting_bid, buy_now_price,
+                             current_bid, status, expires_at, last_seen_at
+                           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                           ON CONFLICT(trade_id) DO UPDATE SET
+                             current_bid = excluded.current_bid,
+                             status = excluded.status,
+                             expires_at = excluded.expires_at,
+                             last_seen_at = excluded.last_seen_at""",
+                        (
+                            listing["trade_id"],
+                            listing["item_id"],
+                            listing.get("starting_bid"),
+                            listing.get("buy_now_price"),
+                            listing.get("current_bid"),
+                            listing.get("status") or "active",
+                            str(listing.get("expires")) if listing.get("expires") is not None else None,
+                            observed_at,
+                        ),
+                    )
+
+            coins = (results.get("coins") or {}).get("coin_balance")
+            connection.execute(
+                """UPDATE account_state SET coin_balance = ?, coin_observed_at = ?,
+                     last_full_sync_id = ?, last_full_sync_at = ?
+                   WHERE persona_id = ?""",
+                (coins, observed_at, sync_id, observed_at, self.persona_id),
+            )
+            connection.execute(
+                "UPDATE sync_runs SET finished_at = ?, status = 'complete' WHERE sync_id = ?",
+                (observed_at, sync_id),
+            )
+            connection.commit()
+        return {
+            "sync_id": sync_id,
+            "item_count": len(new_items),
+            "added": len(set(new_items) - set(old_items)),
+            "removed": len(removed_ids),
+            "complete": True,
+        }
+
+    def query_items(self, request):
+        request = request or {}
+        limit = max(1, min(int(request.get("limit", 100)), 100))
+        offset = int(request.get("cursor") or 0)
+        where = []
+        params = []
+        for key, column in (("locations", "location"), ("card_ea_ids", "card_ea_id")):
+            values = request.get(key) or []
+            if values:
+                where.append(f"{column} IN ({','.join('?' for _ in values)})")
+                params.extend(values)
+        for key in ("tradeable", "protected"):
+            if request.get(key) is not None:
+                where.append(f"{key} = ?")
+                params.append(1 if request[key] else 0)
+        sql = "SELECT * FROM club_items"
+        if where:
+            sql += " WHERE " + " AND ".join(where)
+        sql += " ORDER BY item_id LIMIT ? OFFSET ?"
+        params.extend([limit + 1, offset])
+        with self.connect() as connection:
+            rows = [dict(row) for row in connection.execute(sql, params)]
+            state = self.account_summary()
+        has_more = len(rows) > limit
+        rows = rows[:limit]
+        return {
+            "sync_id": state["last_full_sync_id"] if state else None,
+            "count": len(rows),
+            "items": rows,
+            "next_cursor": str(offset + limit) if has_more else None,
+        }
 
     def _validate_schema(self, connection):
         try:

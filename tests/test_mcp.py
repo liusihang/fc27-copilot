@@ -13,17 +13,22 @@ class IdentityBridge:
         return {"connected": True, "queued_requests": 0, "pending_requests": 0}
 
     def call(self, method, params):
-        if method != "getIdentity":
-            raise AssertionError(method)
-        return {
-            "ok": True,
-            "data": {
+        payloads = {
+            "getIdentity": {
                 "persona_id": "persona-123",
                 "platform": "ps5",
                 "club_id": 10,
                 "club_name": "Fixture Club",
             },
+            "getCoinBalance": {"credits": 5000},
+            "getClubPage": {"itemData": [], "retrievedAll": True},
+            "getStoragePage": {"items": [], "end_of_list": True},
+            "getUnassigned": {"itemData": []},
+            "getTradepile": {"auctionInfo": []},
         }
+        if method not in payloads:
+            raise AssertionError(method)
+        return {"ok": True, "data": payloads[method]}
 
 
 class MCPTest(unittest.TestCase):
@@ -74,10 +79,12 @@ class MCPTest(unittest.TestCase):
     def test_sync_selects_persona_before_inventory_stage(self):
         self.daemon.bridge = IdentityBridge()
         result = self.daemon.call_tool("sync_club", {})
-        self.assertEqual(result["error"]["code"], "ACCOUNT_SYNC_NOT_READY")
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["data"]["complete"])
         account = self.daemon.accounts.status()
         self.assertEqual(account["persona_id"], "persona-123")
         self.assertEqual(account["club_name"], "Fixture Club")
+        self.assertEqual(account["coin_balance"], 5000)
 
 
 if __name__ == "__main__":
