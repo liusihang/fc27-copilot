@@ -24,6 +24,7 @@
 - [实施计划](plan.md)
 - [领域术语](CONTEXT.md)
 - [架构](docs/architecture.md)
+- [OpenClaw 集成](docs/openclaw.md)
 - [来源清单](docs/source-artifacts.md)
 - [交接记录](handoff.md)
 
@@ -57,6 +58,8 @@ python3 mcp_stdio.py
 ```
 
 The MCP server name is `FC27` and exposes exactly ten tools documented in [MCP contract](docs/mcp-contract.md). Start `fc27d.py` before launching the stdio adapter.
+
+macOS 常驻服务和 OpenClaw 注册步骤见 [OpenClaw 集成](docs/openclaw.md)。
 
 ## 声明
 
