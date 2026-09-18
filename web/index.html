@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>FC27 Browser Bridge</title>
+  <style>
+    body{font-family:system-ui,-apple-system,sans-serif;max-width:700px;margin:50px auto;padding:0 20px;background:#111318;color:#f2f4f6}input,button{font:inherit;padding:10px;border-radius:8px}input{width:100%;box-sizing:border-box;background:#1d2129;color:white;border:1px solid #3b424d;margin:8px 0 12px}button{border:0;font-weight:700;cursor:pointer}.box{border:1px solid #303640;border-radius:12px;padding:18px;background:#181b21}.ok{color:#89e6a5}.bad{color:#ff9ca8}pre{white-space:pre-wrap;background:#0d0f13;padding:12px;border-radius:8px;max-height:280px;overflow:auto;font-size:12px}
+  </style>
+</head>
+<body>
+  <h1>FC27 Browser Bridge</h1>
+  <div class="box">
+    <p>Bridge page: <b id="pageState" class="ok">running</b></p>
+    <p>Extension: <b id="extState" class="bad">not checked</b></p>
+    <label>Chrome extension ID</label>
+    <input id="extensionId" placeholder="Paste the ID from chrome://extensions" />
+    <button id="connect">Connect extension</button>
+    <p><small>This localhost page long-polls fc27d and forwards structured EA calls to the Chrome extension. It never receives your raw EA SID/phishing token.</small></p>
+    <pre id="log"></pre>
+  </div>
+<script>
+const idInput=document.getElementById('extensionId');
+const logEl=document.getElementById('log');
+const extState=document.getElementById('extState');
+idInput.value=localStorage.getItem('fc27.extensionId')||'';
+let stopped=false;
+function log(msg){logEl.textContent=`${new Date().toLocaleTimeString()} ${msg}\n`+logEl.textContent;}
+function setExt(ok,text){extState.textContent=text;extState.className=ok?'ok':'bad';}
+function extensionId(){return idInput.value.trim();}
+function postResponse(requestId,payload){return fetch('/browser/respond',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({request_id:requestId,payload})});}
+async function handleEnvelope(envelope){
+  const id=extensionId();
+  if(!id){await postResponse(envelope.request_id,{ok:false,error:{code:'EXTENSION_ID_REQUIRED',message:'Extension ID is not configured on the bridge page.'}});return;}
+  chrome.runtime.sendMessage(id,{type:'FC27_DAEMON_CALL',method:envelope.method,params:envelope.params||{}},async(response)=>{
+    const err=chrome.runtime.lastError;
+    if(err){setExt(false,'unreachable');log(`Extension error: ${err.message}`);response={ok:false,error:{code:'EXTENSION_UNREACHABLE',message:err.message}};}
+    else setExt(true,'connected');
+    try{await postResponse(envelope.request_id,response??null);}catch(e){log(`Response forward error: ${e.message}`);}
+  });
+}
+async function poll(){
+  while(!stopped){
+    try{
+      const response=await fetch('/browser/poll',{cache:'no-store'});
+      if(response.status===204)continue;
+      if(!response.ok){await new Promise(r=>setTimeout(r,1000));continue;}
+      const envelope=await response.json();
+      if(envelope?.type==='fc27-request')await handleEnvelope(envelope);
+    }catch(error){log(`Poll error: ${error.message}`);await new Promise(r=>setTimeout(r,1500));}
+  }
+}
+function probe(){
+  const id=extensionId();
+  if(!id){setExt(false,'missing ID');return;}
+  localStorage.setItem('fc27.extensionId',id);
+  chrome.runtime.sendMessage(id,{type:'FC27_DAEMON_PING'},(response)=>{
+    if(chrome.runtime.lastError||!response){setExt(false,'unreachable');log(chrome.runtime.lastError?.message||'No response');}
+    else{setExt(true,'connected');log('Extension reachable');}
+  });
+}
+document.getElementById('connect').onclick=probe;
+if(idInput.value)setTimeout(probe,300);
+poll();
+</script>
+</body>
+</html>

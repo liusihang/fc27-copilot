@@ -1,0 +1,192 @@
+import json
+import os
+import signal
+import threading
+from datetime import datetime, timezone
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+
+from .bridge import BrowserBridge
+from .catalog import CatalogDB
+from .errors import FC27Error
+
+
+MAX_REQUEST_BYTES = 1024 * 1024
+
+
+def utc_now():
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+class FC27Daemon:
+    def __init__(self, catalog_path, web_root, bridge=None):
+        self.catalog = CatalogDB(catalog_path)
+        self.web_root = Path(web_root)
+        self.bridge = bridge or BrowserBridge()
+
+    def health(self):
+        catalog_validation = self.catalog.validate()
+        return {
+            "ok": catalog_validation["ok"],
+            "observed_at": utc_now(),
+            "catalog": catalog_validation,
+            "catalog_meta": self.catalog.metadata(),
+            "browser_bridge": self.bridge.health(),
+        }
+
+    def rpc(self, request):
+        method = request.get("method")
+        params = request.get("params") or {}
+        if method == "status":
+            return self.health()
+        if method == "catalog_query":
+            return self.catalog.query(params)
+        if method == "browser_call":
+            browser_method = params.get("method")
+            if not browser_method:
+                raise FC27Error("INVALID_REQUEST", "browser_call requires params.method")
+            return self.bridge.call(
+                browser_method,
+                params.get("params") or {},
+                timeout_seconds=min(max(float(params.get("timeout_seconds", 30)), 1), 60),
+            )
+        raise FC27Error(
+            "METHOD_NOT_FOUND",
+            f"Unknown daemon RPC method: {method}",
+            recovery="Use status, catalog_query, or browser_call.",
+        )
+
+
+class FC27HTTPServer(ThreadingHTTPServer):
+    daemon_threads = True
+    allow_reuse_address = True
+
+    def __init__(self, address, daemon):
+        super().__init__(address, FC27RequestHandler)
+        self.fc27 = daemon
+
+
+class FC27RequestHandler(BaseHTTPRequestHandler):
+    server_version = "fc27d/0.1"
+
+    def do_GET(self):
+        try:
+            path = self.path.split("?", 1)[0]
+            if path == "/":
+                self._serve_bridge_page()
+                return
+            if path == "/health":
+                self._json(200, self.server.fc27.health())
+                return
+            if path == "/browser/poll":
+                envelope = self.server.fc27.bridge.poll()
+                if envelope is None:
+                    self.send_response(204)
+                    self.send_header("Cache-Control", "no-store")
+                    self.end_headers()
+                else:
+                    self._json(200, envelope)
+                return
+            self._json(404, {"ok": False, "error": {"code": "NOT_FOUND"}})
+        except FC27Error as error:
+            self._json(503, {"ok": False, "error": error.as_dict()})
+        except Exception:
+            self._internal_error()
+
+    def do_POST(self):
+        try:
+            payload = self._read_json()
+            if self.path == "/browser/respond":
+                accepted = self.server.fc27.bridge.respond(
+                    payload.get("request_id"), payload.get("payload")
+                )
+                if not accepted:
+                    raise FC27Error(
+                        "UNKNOWN_REQUEST",
+                        "The bridge request is unknown or already expired.",
+                    )
+                self._json(200, {"ok": True})
+                return
+            if self.path == "/rpc":
+                self._json(200, {"ok": True, "data": self.server.fc27.rpc(payload)})
+                return
+            self._json(404, {"ok": False, "error": {"code": "NOT_FOUND"}})
+        except FC27Error as error:
+            self._json(400, {"ok": False, "error": error.as_dict()})
+        except (json.JSONDecodeError, UnicodeDecodeError) as error:
+            self._json(
+                400,
+                {
+                    "ok": False,
+                    "error": {"code": "INVALID_JSON", "message": str(error), "retryable": False},
+                },
+            )
+        except Exception:
+            self._internal_error()
+
+    def log_message(self, message_format, *args):
+        print(f"[fc27d] {self.address_string()} {message_format % args}")
+
+    def _serve_bridge_page(self):
+        path = self.server.fc27.web_root / "index.html"
+        body = path.read_bytes()
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _read_json(self):
+        length = int(self.headers.get("Content-Length", "0"))
+        if length > MAX_REQUEST_BYTES:
+            raise FC27Error("REQUEST_TOO_LARGE", "Request body exceeds 1 MiB.")
+        return json.loads(self.rfile.read(length).decode("utf-8") or "{}")
+
+    def _json(self, status, value):
+        body = json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _internal_error(self):
+        self._json(
+            500,
+            {
+                "ok": False,
+                "error": {
+                    "code": "INTERNAL_ERROR",
+                    "message": "fc27d could not complete the local request.",
+                    "retryable": False,
+                    "recovery": "Inspect the fc27d stderr log for the underlying exception.",
+                },
+            },
+        )
+
+
+def serve(host=None, port=None, catalog_path=None, web_root=None):
+    project_root = Path(__file__).resolve().parents[1]
+    host = host or os.environ.get("FC27D_HOST", "127.0.0.1")
+    port = int(port or os.environ.get("FC27D_PORT", "3926"))
+    catalog_path = Path(catalog_path or project_root / "data" / "catalog.sqlite")
+    web_root = Path(web_root or project_root / "web")
+    daemon = FC27Daemon(catalog_path, web_root)
+    server = FC27HTTPServer((host, port), daemon)
+
+    def stop_server(_signum, _frame):
+        threading.Thread(target=server.shutdown, daemon=True).start()
+
+    signal.signal(signal.SIGINT, stop_server)
+    signal.signal(signal.SIGTERM, stop_server)
+    print(f"[fc27d] listening on http://{host}:{server.server_address[1]}")
+    try:
+        server.serve_forever(poll_interval=0.25)
+    finally:
+        server.server_close()
+
+
+if __name__ == "__main__":
+    serve()

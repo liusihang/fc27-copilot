@@ -31,6 +31,23 @@
 
 GitHub Milestone 对应六个实施阶段。每项实现、验证和真实账户验收均通过 Issue 跟踪。未经只读验收，不启用写操作。
 
+## 启动本地守护进程
+
+先按 [数据目录说明](data/README.md) 构建 `data/catalog.sqlite`，然后运行：
+
+```bash
+python3 fc27d.py
+```
+
+默认监听 `http://127.0.0.1:3926`。可用端点：
+
+- `GET /health`：守护进程、Catalog 和浏览器桥接状态；
+- `POST /rpc`：本地内部 RPC；
+- `GET /browser/poll`、`POST /browser/respond`：Chrome 桥接长轮询；
+- `GET /`：浏览器桥接页面。
+
+守护进程只绑定回环地址。通过 `FC27D_HOST` 和 `FC27D_PORT` 可以显式修改监听地址和端口。
+
 ## 声明
 
 这是一个非官方的个人研究和本地工具项目，与 Electronic Arts、FUT.GG 或相关第三方没有隶属或认可关系。EA Web App 接口未公开支持，接口和服务规则可能变化。项目不提供验证码、验证流程、限流或访问控制绕过能力。
