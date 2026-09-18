@@ -1,3 +1,5 @@
+import time
+
 from .errors import FC27Error
 
 
@@ -6,8 +8,9 @@ MAX_PAGES = 1000
 
 
 class AccountReader:
-    def __init__(self, bridge):
+    def __init__(self, bridge, page_delay_seconds=0.25):
         self.bridge = bridge
+        self.page_delay_seconds = page_delay_seconds
 
     def identity(self):
         return self._call("getIdentity", {})
@@ -47,6 +50,7 @@ class AccountReader:
         )
 
     def _read_pages(self, area, method, offset_name):
+        cumulative = area == "club"
         offset = 0
         page_count = 0
         items = []
@@ -56,25 +60,50 @@ class AccountReader:
             payload = self._call(method, {offset_name: offset, "count": PAGE_SIZE})
             page_count += 1
             raw_items = self._raw_items(payload)
-            normalized = [self._normalize_item(item, area) for item in raw_items]
+            normalized = [
+                normalized_item
+                for normalized_item in (
+                    self._normalize_item(item, area) for item in raw_items
+                )
+                if normalized_item.get("item_type") in (None, "player")
+            ]
             signature = tuple(item["item_id"] for item in normalized)
-            if signature and signature in seen_signatures:
+            complete = self._page_complete(payload, len(normalized))
+            if signature and signature in seen_signatures and not complete:
                 raise FC27Error(
                     "PAGINATION_REPEATED_PAGE",
                     f"{area} returned the same item page more than once at offset {offset}.",
                     recovery="Inspect the current FC27 pagination fields before retrying full sync.",
                 )
             seen_signatures.add(signature)
-            for item in normalized:
-                if item["item_id"] in seen_item_ids:
+            page_ids = [item["item_id"] for item in normalized]
+            if len(page_ids) != len(set(page_ids)):
+                raise FC27Error(
+                    "DUPLICATE_ITEM_IN_AREA",
+                    f"One {area} response contained duplicate item IDs.",
+                    recovery="Inspect the EA response before accepting the sync as complete.",
+                )
+            if cumulative:
+                current_ids = set(page_ids)
+                if seen_item_ids and not seen_item_ids.issubset(current_ids):
                     raise FC27Error(
-                        "DUPLICATE_ITEM_IN_AREA",
-                        f"Item {item['item_id']} appeared more than once in {area}.",
-                        recovery="Inspect page boundaries before accepting the sync as complete.",
+                        "PAGINATION_CACHE_REGRESSED",
+                        f"{area} cumulative results lost previously observed items.",
+                        recovery="Restart a full sync after the EA club cache stabilizes.",
                     )
-                seen_item_ids.add(item["item_id"])
-                items.append(item)
-            if self._page_complete(payload, len(normalized)):
+                items = normalized
+                seen_item_ids = current_ids
+            else:
+                for item in normalized:
+                    if item["item_id"] in seen_item_ids:
+                        raise FC27Error(
+                            "DUPLICATE_ITEM_IN_AREA",
+                            f"Item {item['item_id']} appeared more than once in {area}.",
+                            recovery="Inspect page boundaries before accepting the sync as complete.",
+                        )
+                    seen_item_ids.add(item["item_id"])
+                    items.append(item)
+            if complete:
                 return {
                     "area": area,
                     "page_count": page_count,
@@ -83,7 +112,15 @@ class AccountReader:
                     "items": items,
                     "listings": self._listings(payload, area),
                 }
-            offset += PAGE_SIZE
+            if not normalized:
+                raise FC27Error(
+                    "PAGINATION_EMPTY_PAGE",
+                    f"{area} returned an empty page without a completion signal.",
+                    recovery="Inspect the current FC27 pagination fields before retrying full sync.",
+                )
+            offset += PAGE_SIZE if cumulative else len(normalized)
+            if self.page_delay_seconds > 0:
+                time.sleep(self.page_delay_seconds)
         raise FC27Error(
             "PAGINATION_LIMIT_EXCEEDED",
             f"{area} exceeded {MAX_PAGES} pages without a completion signal.",
@@ -92,7 +129,13 @@ class AccountReader:
 
     def _read_single(self, area, method):
         payload = self._call(method, {})
-        items = [self._normalize_item(item, area) for item in self._raw_items(payload)]
+        items = [
+            normalized_item
+            for normalized_item in (
+                self._normalize_item(item, area) for item in self._raw_items(payload)
+            )
+            if normalized_item.get("item_type") in (None, "player")
+        ]
         ids = [item["item_id"] for item in items]
         if len(ids) != len(set(ids)):
             raise FC27Error(
@@ -177,6 +220,7 @@ class AccountReader:
             "tradeable": bool(tradeable),
             "loan_uses_remaining": item.get("loan_uses_remaining", item.get("loans")),
             "acquisition_cost": item.get("acquisition_cost", item.get("lastSalePrice")),
+            "item_type": item.get("item_type", item.get("itemType")),
         }
 
     @staticmethod
@@ -186,10 +230,26 @@ class AccountReader:
         rows = []
         for auction in payload.get("auctionInfo") or []:
             item = auction.get("itemData") or {}
+            if item.get("item_type", item.get("itemType")) not in (None, "player"):
+                continue
+            trade_id = auction.get("tradeId")
+            if trade_id is None:
+                continue
+            try:
+                trade_id = int(trade_id)
+            except (TypeError, ValueError) as error:
+                raise FC27Error(
+                    "EA_TRADE_SCHEMA_INVALID",
+                    "Trade listing ID is not an integer.",
+                    recovery="Capture the current FC27 tradepile response and update the adapter mapping.",
+                    details={"trade_id": trade_id},
+                ) from error
+            if trade_id <= 0:
+                continue
             rows.append(
                 {
-                    "trade_id": auction.get("tradeId"),
-                    "item_id": item.get("id"),
+                    "trade_id": trade_id,
+                    "item_id": item.get("item_id", item.get("id")),
                     "starting_bid": auction.get("startingBid"),
                     "buy_now_price": auction.get("buyNowPrice"),
                     "current_bid": auction.get("currentBid"),

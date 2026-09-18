@@ -63,7 +63,7 @@ TOOLS = [
     {
         "name": "sbc_query",
         "description": "List FC27 SBC sets or return one challenge with current status and requirements through the authenticated browser bridge.",
-        "inputSchema": object_schema({"challenge_id": {"type": ["integer", "string", "null"]}}),
+        "inputSchema": object_schema({"set_id": {"type": ["integer", "string", "null"]}, "challenge_id": {"type": ["integer", "string", "null"]}}),
         "annotations": {"readOnlyHint": True, "destructiveHint": False, "idempotentHint": False, "openWorldHint": True},
     },
     {

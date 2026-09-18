@@ -255,6 +255,90 @@
     };
   }
 
+  function serializeAuction(item) {
+    const auction = item?.getAuctionData?.() || item?._auction || item?.auctionData || {};
+    return {
+      tradeId: readValue(auction, ['tradeId', 'id']),
+      startingBid: readValue(auction, ['startingBid']),
+      buyNowPrice: readValue(auction, ['buyNowPrice']),
+      currentBid: readValue(auction, ['currentBid']),
+      tradeState: readValue(auction, ['tradeState', 'bidState']),
+      expires: readValue(auction, ['expires', 'expiresAt']),
+      itemData: serializeItem(item),
+    };
+  }
+
+  function resultItems(response) {
+    const payload = response?.data ?? response?.response ?? response ?? {};
+    for (const value of [payload?.items, payload?.data?.items, payload?._collection]) {
+      if (Array.isArray(value)) return value;
+    }
+    return [];
+  }
+
+  function plainSbcSet(set) {
+    return {
+      id: readValue(set, ['id', 'setId']),
+      name: readValue(set, ['name', 'displayName']),
+      status: readValue(set, ['status']),
+      expires: readValue(set, ['expires', 'endTime']),
+      repeatable: Boolean(readValue(set, ['repeatable', 'isRepeatable'])),
+      challenge_count: Array.isArray(set?.challenges) ? set.challenges.length : null,
+    };
+  }
+
+  function plainValue(value, depth = 0, seen = new WeakSet()) {
+    if (value === null || value === undefined || ['string', 'number', 'boolean'].includes(typeof value)) return value ?? null;
+    if (typeof value === 'function' || depth > 3) return undefined;
+    if (Array.isArray(value)) return value.map((entry) => plainValue(entry, depth + 1, seen)).filter((entry) => entry !== undefined);
+    if (typeof value !== 'object' || seen.has(value)) return undefined;
+    seen.add(value);
+    const output = {};
+    for (const key of Object.keys(value)) {
+      const normalized = plainValue(value[key], depth + 1, seen);
+      if (normalized !== undefined) output[key] = normalized;
+    }
+    return output;
+  }
+
+  function plainSbcChallenge(challenge) {
+    const requirements = challenge?.eligibilityRequirements || challenge?.requirements || [];
+    return {
+      id: readValue(challenge, ['id', 'challengeId']),
+      set_id: readValue(challenge, ['setId']),
+      name: readValue(challenge, ['name', 'displayName']),
+      status: readValue(challenge, ['status']),
+      repeatable: Boolean(readValue(challenge, ['repeatable', 'isRepeatable'])),
+      completed: typeof challenge?.isCompleted === 'function' ? Boolean(challenge.isCompleted()) : Boolean(challenge?.completed),
+      requirements: plainValue(requirements),
+    };
+  }
+
+  async function loadSbcSets() {
+    const appServices = requireWebAppServices();
+    const response = await observeOnce(appServices.SBC.requestSets());
+    const payload = response.data ?? response.response ?? {};
+    return {
+      appServices,
+      status: response.status ?? null,
+      sets: Array.isArray(payload.sets) ? payload.sets : Array.isArray(payload) ? payload : [],
+    };
+  }
+
+  async function loadSbcChallenges(setId) {
+    const loaded = await loadSbcSets();
+    const set = loaded.sets.find((entry) => String(readValue(entry, ['id', 'setId'])) === String(setId));
+    if (!set) throw Object.assign(new Error(`SBC set ${setId} was not found.`), { code: 'SBC_SET_NOT_FOUND' });
+    return requestSbcChallenges(loaded.appServices, set);
+  }
+
+  async function requestSbcChallenges(appServices, set) {
+    const response = await observeOnce(appServices.SBC.requestChallengesForSet(set));
+    const payload = response.data ?? response.response ?? {};
+    const challenges = Array.isArray(payload.challenges) ? payload.challenges : Array.isArray(payload) ? payload : [];
+    return { set, challenges, status: response.status ?? null };
+  }
+
   function observeOnce(observable) {
     return new Promise((resolve, reject) => {
       if (!observable?.observe) {
@@ -282,36 +366,6 @@
     return globalThis.services;
   }
 
-  function marketQuery(params = {}) {
-    const q = {
-      num: Math.max(1, Math.min(Number(params.limit ?? params.num ?? 21), 21)),
-      start: Math.max(0, Number(params.start ?? 0)),
-      type: params.type || 'player',
-    };
-    const map = {
-      masked_def_id: 'maskedDefId',
-      maskedDefId: 'maskedDefId',
-      definition_id: 'definitionId',
-      definitionId: 'definitionId',
-      rarity_id: 'rarityIds',
-      rarityIds: 'rarityIds',
-      min_buy_now: 'minb',
-      max_buy_now: 'maxb',
-      min_bid: 'micr',
-      max_bid: 'macr',
-      position: 'pos',
-      level: 'lev',
-      nation_id: 'nat',
-      league_id: 'leag',
-      club_id: 'team',
-    };
-    for (const [inputKey, apiKey] of Object.entries(map)) {
-      if (params[inputKey] !== undefined && params[inputKey] !== null) q[apiKey] = params[inputKey];
-    }
-    if (params.raw_query && typeof params.raw_query === 'object') Object.assign(q, params.raw_query);
-    return q;
-  }
-
   const methods = {
     async getSessionStatus() {
       return publicSession();
@@ -335,7 +389,16 @@
     },
 
     async getCoinBalance() {
-      return eaRequest('/user/credits');
+      const appServices = requireWebAppServices();
+      if (typeof appServices.User?.requestCurrencies === 'function') {
+        await observeOnce(appServices.User.requestCurrencies());
+      }
+      const user = appServices.User?.getUser?.();
+      const credits = readValue(user?.coins, ['amount']) ?? readValue(user?.credits, ['amount']) ?? readValue(user, ['coinBalance', 'credits']);
+      if (credits === null) {
+        throw Object.assign(new Error('FC27 user currency state does not expose a coin balance.'), { code: 'EA_COIN_SCHEMA_INVALID' });
+      }
+      return { credits: Number(credits) };
     },
 
     async keepalive() {
@@ -347,7 +410,19 @@
     },
 
     async searchTransferMarket(params) {
-      return eaRequest('/transfermarket', { query: marketQuery(params) });
+      const appServices = requireWebAppServices();
+      if (typeof globalThis.UTBucketedItemSearchViewModel !== 'function') {
+        throw Object.assign(new Error('FC27 transfer search model is unavailable.'), { code: 'EA_MARKET_MODEL_UNAVAILABLE' });
+      }
+      const model = new globalThis.UTBucketedItemSearchViewModel();
+      const criteria = model.searchCriteria;
+      criteria.defId = [Number(params.definition_id ?? params.masked_def_id)];
+      criteria.count = Math.max(1, Math.min(Number(params.limit ?? 21), 21));
+      if (params.min_buy_now != null) criteria.minBuy = Number(params.min_buy_now);
+      if (params.max_buy_now != null) criteria.maxBuy = Number(params.max_buy_now);
+      appServices.Item.clearTransferMarketCache?.();
+      const response = await observeOnce(appServices.Item.searchTransferMarket(criteria, 1));
+      return { auctionInfo: resultItems(response).map(serializeAuction) };
     },
 
     async buyNow(params) {
@@ -377,18 +452,28 @@
     },
 
     async getClubPage(params = {}) {
-      return eaRequest('/club', {
-        query: {
-          type: 'player',
-          start: Math.max(0, Number(params.start ?? 0)),
-          count: Math.max(1, Math.min(Number(params.count ?? 100), 100)),
-          defId: params.definition_id,
-        },
-      });
+      const appServices = requireWebAppServices();
+      if (typeof globalThis.UTBucketedItemSearchViewModel !== 'function') {
+        throw Object.assign(new Error('FC27 club search model is unavailable.'), { code: 'EA_CLUB_MODEL_UNAVAILABLE' });
+      }
+      const model = new globalThis.UTBucketedItemSearchViewModel();
+      const criteria = model.searchCriteria;
+      criteria.offset = Math.max(0, Number(params.start ?? 0));
+      criteria.count = Math.max(1, Math.min(Number(params.count ?? 100), 100));
+      const response = await observeOnce(appServices.Club.search(criteria));
+      const payload = response.data ?? response.response ?? {};
+      const items = resultItems(response).map(serializeItem);
+      return {
+        itemData: items,
+        retrievedAll: Boolean(payload.retrievedAll ?? payload.endOfList ?? items.length < criteria.count),
+        status: response.status ?? null,
+      };
     },
 
     async getUnassigned() {
-      return eaRequest('/purchased/items');
+      const appServices = requireWebAppServices();
+      const response = await observeOnce(appServices.Item.requestUnassignedItems());
+      return { itemData: resultItems(response).map(serializeItem), status: response.status ?? null };
     },
 
     async getStoragePage(params = {}) {
@@ -427,11 +512,15 @@
     },
 
     async getTradepile() {
-      return eaRequest('/tradepile');
+      const appServices = requireWebAppServices();
+      const response = await observeOnce(appServices.Item.requestTransferItems());
+      return { auctionInfo: resultItems(response).map(serializeAuction), status: response.status ?? null };
     },
 
     async getWatchlist() {
-      return eaRequest('/watchlist');
+      const appServices = requireWebAppServices();
+      const response = await observeOnce(appServices.Item.requestWatchedItems());
+      return { auctionInfo: resultItems(response).map(serializeAuction), status: response.status ?? null };
     },
 
     async relistAll() {
@@ -443,20 +532,33 @@
     },
 
     async getSbcSets() {
-      try { return await eaRequest('/sbs/sets'); }
-      catch (error) {
-        if (Number(error.status) !== 404) throw error;
-        return eaRequest('/sbs/challenge');
-      }
+      const loaded = await loadSbcSets();
+      return { sets: loaded.sets.map(plainSbcSet), status: loaded.status };
+    },
+
+    async getSbcChallenges(params) {
+      const loaded = await loadSbcChallenges(params.set_id);
+      return {
+        set: plainSbcSet(loaded.set),
+        challenges: loaded.challenges.map(plainSbcChallenge),
+        status: loaded.status,
+      };
     },
 
     async getSbcChallenge(params) {
-      const id = encodeURIComponent(params.challenge_id);
-      try { return await eaRequest(`/sbs/challenge/${id}`); }
-      catch (error) {
-        if (Number(error.status) !== 404) throw error;
-        return eaRequest('/sbs/challenge', { query: { challengeId: params.challenge_id } });
+      if (params.set_id != null) {
+        const loaded = await loadSbcChallenges(params.set_id);
+        const challenge = loaded.challenges.find((entry) => String(readValue(entry, ['id', 'challengeId'])) === String(params.challenge_id));
+        if (!challenge) throw Object.assign(new Error(`SBC challenge ${params.challenge_id} was not found.`), { code: 'SBC_CHALLENGE_NOT_FOUND' });
+        return { set: plainSbcSet(loaded.set), challenge: plainSbcChallenge(challenge), status: loaded.status };
       }
+      const loaded = await loadSbcSets();
+      for (const set of loaded.sets) {
+        const result = await requestSbcChallenges(loaded.appServices, set);
+        const challenge = result.challenges.find((entry) => String(readValue(entry, ['id', 'challengeId'])) === String(params.challenge_id));
+        if (challenge) return { set: plainSbcSet(set), challenge: plainSbcChallenge(challenge), status: result.status };
+      }
+      throw Object.assign(new Error(`SBC challenge ${params.challenge_id} was not found.`), { code: 'SBC_CHALLENGE_NOT_FOUND' });
     },
   };
 

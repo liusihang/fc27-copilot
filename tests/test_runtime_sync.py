@@ -69,7 +69,9 @@ class RuntimeSyncTest(unittest.TestCase):
         state = self.runtime.account_summary()
         self.assertEqual(state["coin_balance"], 12345)
         self.assertEqual(state["last_full_sync_id"], summary["sync_id"])
-        self.assertEqual(self.runtime.query_items({})["count"], 4)
+        query = self.runtime.query_items({"limit": 2})
+        self.assertEqual(query["count"], 2)
+        self.assertEqual(query["total_count"], 4)
 
     def test_second_sync_records_move_remove_add_and_preserves_local_fields(self):
         first = self.commit(results(item(1, 101, "club", cost=500), item(2, 102, "storage")))

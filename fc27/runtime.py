@@ -277,7 +277,6 @@ class RuntimeDB:
                             observed_at,
                         ),
                     )
-
             coins = (results.get("coins") or {}).get("coin_balance")
             connection.execute(
                 """UPDATE account_state SET coin_balance = ?, coin_observed_at = ?,
@@ -313,19 +312,26 @@ class RuntimeDB:
             if request.get(key) is not None:
                 where.append(f"{key} = ?")
                 params.append(1 if request[key] else 0)
-        sql = "SELECT * FROM club_items"
+        base_sql = " FROM club_items"
         if where:
-            sql += " WHERE " + " AND ".join(where)
+            base_sql += " WHERE " + " AND ".join(where)
+        sql = "SELECT *" + base_sql
         sql += " ORDER BY item_id LIMIT ? OFFSET ?"
-        params.extend([limit + 1, offset])
         with self.connect() as connection:
-            rows = [dict(row) for row in connection.execute(sql, params)]
+            total_count = connection.execute(
+                "SELECT COUNT(*)" + base_sql, params
+            ).fetchone()[0]
+            rows = [
+                dict(row)
+                for row in connection.execute(sql, [*params, limit + 1, offset])
+            ]
             state = self.account_summary()
         has_more = len(rows) > limit
         rows = rows[:limit]
         return {
             "sync_id": state["last_full_sync_id"] if state else None,
             "count": len(rows),
+            "total_count": total_count,
             "items": rows,
             "next_cursor": str(offset + limit) if has_more else None,
         }

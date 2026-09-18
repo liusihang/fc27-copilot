@@ -25,6 +25,16 @@ class IdentityBridge:
             "getStoragePage": {"items": [], "end_of_list": True},
             "getUnassigned": {"itemData": []},
             "getTradepile": {"auctionInfo": []},
+            "getSessionStatus": {
+                "webAppConnected": True,
+                "authenticated": True,
+                "sidCaptured": True,
+                "phishingTokenCaptured": True,
+                "apiBaseUrl": "https://example.ea.com/ut/game/fc27",
+                "apiHost": "example.ea.com",
+                "gameVersion": "fc27",
+                "capturedAt": "2026-09-18T13:00:00Z",
+            },
         }
         if method not in payloads:
             raise AssertionError(method)
@@ -85,6 +95,16 @@ class MCPTest(unittest.TestCase):
         self.assertEqual(account["persona_id"], "persona-123")
         self.assertEqual(account["club_name"], "Fixture Club")
         self.assertEqual(account["coin_balance"], 5000)
+
+    def test_status_reports_public_session_and_observe_policy(self):
+        self.daemon.bridge = IdentityBridge()
+        result = self.daemon.call_tool("status", {})
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["data"]["ea_session"]["authenticated"])
+        self.assertTrue(result["data"]["ea_session"]["sidCaptured"])
+        self.assertNotIn("sid", result["data"]["ea_session"])
+        self.assertEqual(result["data"]["policy"]["mode"], "observe")
+        self.assertFalse(result["data"]["policy"]["account_writes_enabled"])
 
 
 if __name__ == "__main__":

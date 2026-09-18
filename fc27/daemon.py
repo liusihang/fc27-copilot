@@ -69,7 +69,31 @@ class FC27Daemon:
     def call_tool(self, name, arguments):
         try:
             if name == "status":
-                return self._envelope("fc27d", self.health())
+                data = self.health()
+                data["policy"] = {
+                    "mode": "observe",
+                    "account_writes_enabled": False,
+                }
+                if data["browser_bridge"]["connected"]:
+                    try:
+                        data["ea_session"] = self._browser_tool("getSessionStatus", {})
+                    except FC27Error as error:
+                        data["ea_session"] = {
+                            "authenticated": False,
+                            "error": error.as_dict(),
+                        }
+                else:
+                    data["ea_session"] = {
+                        "webAppConnected": False,
+                        "authenticated": False,
+                        "sidCaptured": False,
+                        "phishingTokenCaptured": False,
+                        "apiBaseUrl": None,
+                        "apiHost": None,
+                        "gameVersion": None,
+                        "capturedAt": None,
+                    }
+                return self._envelope("fc27d", data)
             if name == "catalog_query":
                 return self._envelope("catalog", self.catalog.query(arguments))
             if name == "catalog_refresh":
@@ -149,8 +173,16 @@ class FC27Daemon:
                 return self._envelope("ea_webapp", data)
             if name == "sbc_query":
                 challenge_id = arguments.get("challenge_id")
-                method = "getSbcChallenge" if challenge_id is not None else "getSbcSets"
-                params = {"challenge_id": challenge_id} if challenge_id is not None else {}
+                set_id = arguments.get("set_id")
+                if challenge_id is not None:
+                    method = "getSbcChallenge"
+                    params = {"challenge_id": challenge_id, "set_id": set_id}
+                elif set_id is not None:
+                    method = "getSbcChallenges"
+                    params = {"set_id": set_id}
+                else:
+                    method = "getSbcSets"
+                    params = {}
                 return self._envelope("ea_webapp", self._browser_tool(method, params))
             if name == "price_context":
                 raise FC27Error(
