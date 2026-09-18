@@ -1,0 +1,12 @@
+{
+  "execution_mode": "observe",
+  "minimum_coin_reserve": 0,
+  "maximum_single_purchase": 0,
+  "maximum_batch_spend": 0,
+  "maximum_daily_spend": 0,
+  "maximum_batch_actions": 1,
+  "maximum_same_card_owned": 1,
+  "maximum_tradepile_usage": 0,
+  "protected_item_ids": [],
+  "allowed_action_types": []
+}
