@@ -11,6 +11,9 @@
   "allowed_action_types": [
     "buy_now",
     "list_item",
-    "move_item"
+    "move_item",
+    "save_squad",
+    "save_squad_tactics",
+    "set_active_squad"
   ]
 }

@@ -217,6 +217,46 @@ class ExecutionServiceTest(unittest.TestCase):
             ExecutionService._normalize_action(action)
         self.assertEqual(empty.exception.code, "INVALID_ACTION")
 
+    def test_squad_action_normalization_uses_web_app_ranges(self):
+        action = {
+            "action_id": "tactic-1",
+            "idempotency_key": "tactic-1",
+            "type": "save_squad_tactics",
+            "squad_id": 1,
+            "expected_squad_hash": "a" * 64,
+            "tactic_id": 6,
+            "defensive_style": 3,
+            "defensive_line_height": 100,
+            "build_up_play_style": 2,
+            "instructions": [
+                {"slot_index": 9, "position_id": 25, "role_id": 24, "variation_id": 5}
+            ],
+        }
+        normalized = ExecutionService._normalize_action(action)
+        self.assertEqual(normalized["tactic_id"], 6)
+        self.assertEqual(normalized["defensive_line_height"], 100)
+
+        action["defensive_line_height"] = 101
+        with self.assertRaises(FC27Error) as invalid:
+            ExecutionService._normalize_action(action)
+        self.assertEqual(invalid.exception.code, "INVALID_ACTION")
+
+    def test_squad_items_obey_owned_and_protected_checks(self):
+        action = {
+            "action_id": "squad-1",
+            "idempotency_key": "squad-1",
+            "type": "save_squad",
+            "squad_id": 1,
+            "expected_squad_hash": "b" * 64,
+            "slot_updates": [{"slot_index": 0, "item_id": 10}],
+        }
+        service = self.service(
+            policy(allowed_action_types=["save_squad"]), lambda value: {"ok": True}
+        )
+        with self.assertRaises(FC27Error) as protected:
+            service.execute(self.request(actions=[action]))
+        self.assertEqual(protected.exception.code, "POLICY_DENIED")
+
 
 if __name__ == "__main__":
     unittest.main()

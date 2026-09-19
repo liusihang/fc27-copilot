@@ -14,6 +14,9 @@ ACTION_TYPES = (
     "clear_sold",
     "save_sbc_squad",
     "submit_sbc",
+    "set_active_squad",
+    "save_squad",
+    "save_squad_tactics",
 )
 INTEGER_LIMITS = (
     "minimum_coin_reserve",

@@ -8,6 +8,7 @@ from .policy import ACTION_TYPES
 PURCHASE_TYPES = ("buy_now", "place_bid")
 ITEM_TYPES = ("list_item", "move_item")
 SBC_TYPES = ("save_sbc_squad", "submit_sbc")
+SQUAD_TYPES = ("set_active_squad", "save_squad", "save_squad_tactics")
 
 
 def utc_now():
@@ -284,6 +285,24 @@ class ExecutionService:
                         action["challenge_id"],
                         action["item_ids"],
                     )
+            if action["type"] in SQUAD_TYPES:
+                for value in action.get("slot_updates") or []:
+                    item_id = value.get("item_id")
+                    if item_id is None:
+                        continue
+                    item = item_rows.get(item_id)
+                    if item is None:
+                        raise FC27Error(
+                            "ITEM_NOT_FOUND",
+                            f"Squad item {item_id} is absent from the latest complete state.",
+                            retryable=True,
+                            recovery="Run FC27:sync_club and rebuild the squad action from current item IDs.",
+                        )
+                    if item_id in protected:
+                        self._policy_denied(f"Squad item {item_id} is protected.")
+                    loan_uses = item.get("loan_uses_remaining")
+                    if loan_uses is not None and int(loan_uses) >= 0:
+                        self._policy_denied(f"Squad item {item_id} is a loan item.")
             if action["type"] == "list_item" and not item["tradeable"]:
                 self._policy_denied(f"Item {item_id} is untradeable and cannot be listed.")
             if action["type"] in PURCHASE_TYPES:
@@ -420,6 +439,86 @@ class ExecutionService:
                 raise FC27Error("INVALID_ACTION", "SBC item_ids must be integers.") from error
             if len(set(normalized["item_ids"])) != len(normalized["item_ids"]):
                 raise FC27Error("INVALID_ACTION", "SBC item_ids must be unique.")
+        if action_type in SQUAD_TYPES:
+            for key in ("squad_id",):
+                try:
+                    normalized[key] = int(normalized[key])
+                except (KeyError, TypeError, ValueError) as error:
+                    raise FC27Error("INVALID_ACTION", f"{action_type} requires integer {key}.") from error
+            expected_hash = normalized.get("expected_squad_hash")
+            if not isinstance(expected_hash, str) or len(expected_hash) != 64 or any(
+                character not in "0123456789abcdef" for character in expected_hash
+            ):
+                raise FC27Error(
+                    "INVALID_ACTION",
+                    f"{action_type} requires the 64-character expected_squad_hash from squad_query.",
+                )
+        if action_type == "save_squad":
+            if normalized.get("formation_id") is None and not normalized.get("slot_updates"):
+                raise FC27Error(
+                    "INVALID_ACTION", "save_squad requires formation_id or slot_updates."
+                )
+            if normalized.get("formation_id") is not None:
+                normalized["formation_id"] = int(normalized["formation_id"])
+            updates = normalized.get("slot_updates") or []
+            if not isinstance(updates, list) or len(updates) > 24:
+                raise FC27Error("INVALID_ACTION", "slot_updates must contain at most 24 entries.")
+            normalized_updates = []
+            for value in updates:
+                if not isinstance(value, dict):
+                    raise FC27Error("INVALID_ACTION", "Each slot update must be an object.")
+                slot_index = int(value.get("slot_index"))
+                if not 0 <= slot_index <= 23:
+                    raise FC27Error("INVALID_ACTION", "slot_index must be between 0 and 23.")
+                item_id = value.get("item_id")
+                normalized_updates.append(
+                    {"slot_index": slot_index, "item_id": None if item_id is None else int(item_id)}
+                )
+            if len({value["slot_index"] for value in normalized_updates}) != len(normalized_updates):
+                raise FC27Error("INVALID_ACTION", "slot_updates cannot repeat a slot_index.")
+            item_ids = [value["item_id"] for value in normalized_updates if value["item_id"] is not None]
+            if len(item_ids) != len(set(item_ids)):
+                raise FC27Error("INVALID_ACTION", "slot_updates cannot assign one item to multiple slots.")
+            normalized["slot_updates"] = normalized_updates
+        if action_type == "save_squad_tactics":
+            try:
+                normalized["tactic_id"] = int(normalized["tactic_id"])
+            except (KeyError, TypeError, ValueError) as error:
+                raise FC27Error("INVALID_ACTION", "save_squad_tactics requires tactic_id.") from error
+            if not 6 <= normalized["tactic_id"] <= 10:
+                raise FC27Error("INVALID_ACTION", "tactic_id must be a Web App tactics slot from 6 through 10.")
+            numeric_ranges = {
+                "defensive_style": (0, 3),
+                "defensive_line_height": (1, 100),
+                "build_up_play_style": (0, 2),
+            }
+            for key, (minimum, maximum) in numeric_ranges.items():
+                if normalized.get(key) is None:
+                    continue
+                normalized[key] = int(normalized[key])
+                if not minimum <= normalized[key] <= maximum:
+                    raise FC27Error("INVALID_ACTION", f"{key} must be between {minimum} and {maximum}.")
+            if normalized.get("formation_id") is not None:
+                normalized["formation_id"] = int(normalized["formation_id"])
+            instructions = normalized.get("instructions") or []
+            normalized_instructions = []
+            for value in instructions:
+                normalized_instructions.append(
+                    {
+                        "slot_index": int(value["slot_index"]),
+                        "position_id": int(value["position_id"]),
+                        "role_id": int(value["role_id"]),
+                        "variation_id": int(value["variation_id"]),
+                    }
+                )
+            if any(not 0 <= value["slot_index"] <= 10 for value in normalized_instructions):
+                raise FC27Error("INVALID_ACTION", "Tactic slot_index must be between 0 and 10.")
+            if len({value["slot_index"] for value in normalized_instructions}) != len(normalized_instructions):
+                raise FC27Error("INVALID_ACTION", "Tactic instructions cannot repeat a slot_index.")
+            normalized["instructions"] = normalized_instructions
+            mutable = ("name", "formation_id", *numeric_ranges, "active", "instructions")
+            if not any(normalized.get(key) not in (None, [], False) for key in mutable):
+                raise FC27Error("INVALID_ACTION", "save_squad_tactics requires at least one change.")
         return normalized
 
     def _insert_audit(self, request, actions, execution_mode):

@@ -58,6 +58,9 @@ if (!daemonBridge.includes('/browser/poll')) errors.push('direct daemon poll mis
 if (!daemonBridge.includes('/browser/respond')) errors.push('direct daemon response forwarding missing');
 if (!daemonBridge.includes('/browser/event')) errors.push('browser event delivery missing');
 
+const pageBridge = await fs.readFile(path.join(extension, 'background', 'bridge.js'), 'utf8');
+if (!pageBridge.includes('for (const tab of tabs)')) errors.push('multi-tab Web App bridge selection missing');
+
 const contentScript = await fs.readFile(path.join(extension, 'content', 'content-script.js'), 'utf8');
 if (!contentScript.includes("type: 'FC27_BRIDGE_POLL'")) errors.push('Web App-driven daemon polling missing');
 
@@ -77,6 +80,14 @@ if (!pageInject.includes('lifecycleSets')) errors.push('Evolution lifecycle evid
 if (!pageInject.includes('requestPages')) errors.push('Evolution pagination missing');
 if (!pageInject.includes("display_group: started ? 'my_evolutions'")) errors.push('My Evolutions display group missing');
 if (!pageInject.includes('async getEvolutions()')) errors.push('evolution reader missing');
+if (!pageInject.includes('async getSquads(params = {})')) errors.push('squad reader missing');
+if (!pageInject.includes('requestSquadList')) errors.push('squad-list request missing');
+if (!pageInject.includes('requestSquadById')) errors.push('exact squad request missing');
+if (!pageInject.includes('squadTacticsCatalog')) errors.push('squad tactics catalog missing');
+if (!pageInject.includes('async setActiveSquad(params)')) errors.push('active-squad writer missing');
+if (!pageInject.includes('async saveSquad(params)')) errors.push('squad writer missing');
+if (!pageInject.includes('async saveSquadTactics(params)')) errors.push('squad tactics writer missing');
+if (!pageInject.includes("const mutationPaths = ['/auctionhouse', '/item', '/tradepile', '/squad'")) errors.push('squad mutation observation missing');
 if (!pageInject.includes('requestSlotsByCategory')) errors.push('available evolution category reader missing');
 
 for (const file of files.filter((f) => f.endsWith('.js') && !f.endsWith('content/page-inject.js'))) {

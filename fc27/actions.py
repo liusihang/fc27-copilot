@@ -2,6 +2,7 @@ import time
 
 from .errors import FC27Error
 from .sbc import SbcService
+from .squad import SquadService
 
 
 SBC_TIMEOUT_CODES = {
@@ -187,6 +188,140 @@ class ActionDispatcher:
     def _clear_sold(self, action):
         self._call("clearSold", {})
         return {"sync": self.sync_full("post_action")}
+
+    def _set_active_squad(self, action):
+        before = self._require_squad_hash(action)
+        response = self._squad_write(
+            "setActiveSquad", {"squad_id": action["squad_id"]}
+        )
+        after = self._read_squad(action["squad_id"])
+        if after["active_squad_id"] != action["squad_id"] or not after["squad"]["active"]:
+            raise FC27Error(
+                "SQUAD_READBACK_FAILED",
+                "Fresh squad readback did not confirm the requested active squad.",
+                recovery="Do not repeat the action. Inspect squad_query before another write.",
+                details={"response": response, "readback": after},
+            )
+        return {"before": before, "after": after["squad"], "ea": response}
+
+    def _save_squad(self, action):
+        before = self._require_squad_hash(action)
+        response = self._squad_write(
+            "saveSquad",
+            {
+                "squad_id": action["squad_id"],
+                "formation_id": action.get("formation_id"),
+                "slot_updates": action.get("slot_updates") or [],
+            },
+        )
+        after = self._read_squad(action["squad_id"])["squad"]
+        if action.get("formation_id") is not None and int(
+            (after.get("formation") or {}).get("id") or -1
+        ) != action["formation_id"]:
+            raise self._squad_readback_error("formation", response, after)
+        by_slot = {value["slot_index"]: value for value in after.get("slots") or []}
+        for update in action.get("slot_updates") or []:
+            observed = (by_slot.get(update["slot_index"], {}).get("item") or {}).get("item_id")
+            if observed != update["item_id"]:
+                raise self._squad_readback_error(
+                    f"slot {update['slot_index']}", response, after
+                )
+        return {"before": before, "after": after, "ea": response}
+
+    def _save_squad_tactics(self, action):
+        before = self._require_squad_hash(action)
+        params = {
+            key: action.get(key)
+            for key in (
+                "squad_id",
+                "tactic_id",
+                "name",
+                "formation_id",
+                "defensive_style",
+                "defensive_line_height",
+                "build_up_play_style",
+                "active",
+                "instructions",
+            )
+        }
+        response = self._squad_write("saveSquadTactics", params)
+        after = self._read_squad(action["squad_id"])["squad"]
+        tactic = next(
+            (value for value in after.get("tactics") or [] if value.get("id") == action["tactic_id"]),
+            None,
+        )
+        if tactic is None:
+            raise self._squad_readback_error("tactic profile", response, after)
+        expected_fields = {
+            "name": action.get("name"),
+            "defensive_style": action.get("defensive_style"),
+            "defensive_line_height": action.get("defensive_line_height"),
+            "build_up_play_style": action.get("build_up_play_style"),
+        }
+        for key, expected in expected_fields.items():
+            if expected is not None and tactic.get(key) != expected:
+                raise self._squad_readback_error(key, response, after)
+        if action.get("formation_id") is not None and int(
+            (tactic.get("formation") or {}).get("id") or -1
+        ) != action["formation_id"]:
+            raise self._squad_readback_error("tactic formation", response, after)
+        if action.get("active") is True and tactic.get("state_name") != "ACTIVE":
+            raise self._squad_readback_error("active tactic", response, after)
+        instructions = {value["slot_index"]: value for value in tactic.get("instructions") or []}
+        for expected in action.get("instructions") or []:
+            observed = instructions.get(expected["slot_index"]) or {}
+            if any(observed.get(key) != expected[key] for key in ("position_id", "role_id", "variation_id")):
+                raise self._squad_readback_error(
+                    f"tactic slot {expected['slot_index']}", response, after
+                )
+        return {"before": before, "after": after, "ea": response}
+
+    def _read_squad(self, squad_id):
+        raw = self._call(
+            "getSquads", {"detail": "detailed", "squad_id": int(squad_id)}
+        )
+        data = SquadService.normalize(
+            raw,
+            {"selection": "exact", "detail": "detailed", "squad_id": int(squad_id)},
+        )
+        return {"active_squad_id": data["active_squad_id"], "squad": data["squads"][0]}
+
+    def _require_squad_hash(self, action):
+        current = self._read_squad(action["squad_id"])["squad"]
+        if current["squad_hash"] != action["expected_squad_hash"]:
+            raise FC27Error(
+                "STALE_SQUAD_STATE",
+                "The live squad changed after the Agent observed it.",
+                retryable=True,
+                recovery="Run FC27:squad_query again and rebuild the exact action.",
+                details={
+                    "expected_squad_hash": action["expected_squad_hash"],
+                    "current_squad_hash": current["squad_hash"],
+                },
+            )
+        return current
+
+    def _squad_write(self, method, params):
+        try:
+            return self._call(method, params)
+        except FC27Error as error:
+            if error.code not in SBC_TIMEOUT_CODES:
+                raise
+            raise FC27Error(
+                "SQUAD_WRITE_OUTCOME_UNKNOWN",
+                "The squad write timed out before its outcome could be confirmed.",
+                recovery="Do not retry. Read the exact squad through FC27:squad_query and compare its hash.",
+                details={"write_error": error.as_dict()},
+            ) from error
+
+    @staticmethod
+    def _squad_readback_error(field, response, after):
+        return FC27Error(
+            "SQUAD_READBACK_FAILED",
+            f"Fresh squad readback did not confirm {field}.",
+            recovery="Do not repeat the action. Inspect squad_query before another write.",
+            details={"response": response, "readback": after},
+        )
 
     def _save_sbc_squad(self, action):
         service = self._sbc_service()

@@ -82,7 +82,7 @@ python3 -m venv .venv
 python3 mcp_stdio.py
 ```
 
-The MCP server name is `FC27` and exposes eleven tools documented in [MCP contract](docs/mcp-contract.md). Start `fc27d.py` before launching the stdio adapter.
+The MCP server name is `FC27` and exposes twelve tools documented in [MCP contract](docs/mcp-contract.md). Start `fc27d.py` before launching the stdio adapter.
 
 macOS 常驻服务和 OpenClaw 注册步骤见 [OpenClaw 集成](docs/openclaw.md)。
 

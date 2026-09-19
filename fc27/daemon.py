@@ -20,6 +20,7 @@ from .market import MarketService
 from .policy import PolicyStore
 from .runtime import RuntimeManager
 from .sbc import SbcService
+from .squad import SquadService
 
 
 MAX_REQUEST_BYTES = 1024 * 1024
@@ -48,6 +49,7 @@ class FC27Daemon:
         project_root = Path(__file__).resolve().parents[1]
         self.policy = PolicyStore(policy_path or project_root / "policy.json")
         self.content = ContentService()
+        self.squads = SquadService()
         self.futgg_content = FutggContentClient()
         self.mcp = MCPServer(self)
         self._catalog_refresh_lock = threading.Lock()
@@ -214,6 +216,27 @@ class FC27Daemon:
                     "No EA Persona runtime database has been selected yet.",
                     retryable=True,
                     recovery="Log in, connect the browser bridge, then call FC27:sync_club.",
+                )
+            if name == "squad_query":
+                if not self.bridge.health()["connected"]:
+                    raise FC27Error(
+                        "EA_SESSION_REQUIRED",
+                        "An authenticated FC27 Web App session is required for squad data.",
+                        retryable=True,
+                        recovery="Open the FC27 Web App and sign in; the extension connects automatically.",
+                    )
+                options = self.squads.validate_arguments(arguments)
+                raw = self._browser_tool(
+                    "getSquads",
+                    {
+                        "detail": options["detail"],
+                        "squad_id": options["squad_id"]
+                        if options["selection"] == "exact"
+                        else None,
+                    },
+                )
+                return self._envelope(
+                    "ea_webapp", self.squads.normalize(raw, options)
                 )
             if name == "sync_club":
                 if not self.bridge.health()["connected"]:

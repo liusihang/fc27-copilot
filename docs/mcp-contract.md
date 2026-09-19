@@ -84,6 +84,18 @@ Searches local catalog data by text, exact card IDs, positions, overall range, a
 
 Reads the latest complete local club mirror. It can filter locations, card IDs, tradeability, and local protection state. Pagination uses an opaque cursor. `include_catalog=true` joins catalog facts.
 
+### `FC27:squad_query`
+
+Reads current Ultimate Team squads directly through the authenticated Web App.
+
+- `selection=all`: squad list.
+- `selection=active`: current playing squad.
+- `selection=exact`: one `squad_id`.
+- `detail=summary`: identity, formation, rating, chemistry and active state.
+- `detail=detailed`: ordered starting, substitute, reserve and manager slots; exact owned `item_id` values; five tactics profiles; current Web App formations; style enums; and position-compatible role/variation options.
+
+Every detailed squad includes a canonical `squad_hash` over active state, formation, ordered slots and tactics. Summary results omit the hash because they do not contain the complete hashed state. Squad-changing actions must use the detailed hash and fail with `STALE_SQUAD_STATE` if the live squad changed.
+
 ### `FC27:sync_club`
 
 Runs a read-only full or targeted synchronization through the authenticated browser bridge. Full mode records per-area completeness and commits only after all required areas finish.
@@ -164,7 +176,15 @@ Required batch controls:
 - one unique `action_id` and `idempotency_key` per action;
 - `confirmed=true` when policy mode requires confirmation.
 
-Supported action types are introduced only after their own acceptance Issues: `buy_now`, `place_bid`, `list_item`, `move_item`, `relist_all`, `clear_sold`, `save_sbc_squad`, and `submit_sbc`.
+Supported action types include `buy_now`, `place_bid`, `list_item`, `move_item`, `relist_all`, `clear_sold`, `save_sbc_squad`, `submit_sbc`, `set_active_squad`, `save_squad`, and `save_squad_tactics`.
+
+Squad action fields follow the current Web App contract:
+
+- `set_active_squad`: `squad_id`, `expected_squad_hash`.
+- `save_squad`: `squad_id`, `expected_squad_hash`, optional `formation_id`, and optional `slot_updates` containing exact `slot_index` 0–23 plus owned `item_id` or `null`.
+- `save_squad_tactics`: `squad_id`, `expected_squad_hash`, tactics profile `tactic_id` 6–10, and one or more supported changes: name, formation, defensive style 0–3, defensive line height 1–100, build-up style 0–2, active profile state, or exact role/variation instructions for slots 0–10.
+
+These actions apply one coherent Web App save and then independently reload the target squad. Timeout results use `SQUAD_WRITE_OUTCOME_UNKNOWN`; callers read `squad_query` and never retry automatically.
 
 ### `FC27:catalog_refresh`
 
@@ -189,6 +209,9 @@ Save and submit reconciliation are narrow localhost daemon RPCs, not additional 
 | `ACCOUNT_MISMATCH` | Logged-in Persona differs from the selected runtime database. | Switch to the matching account database before syncing. |
 | `SYNC_INCOMPLETE` | One or more required areas did not complete. | Inspect failed areas and retry a full sync. |
 | `STALE_CLUB_STATE` | `expected_sync_id` is older than current state. | Sync, inspect the new state, and rebuild the action list. |
+| `STALE_SQUAD_STATE` | The live squad hash differs from the Agent-observed hash. | Run `squad_query` and rebuild the exact action. |
+| `SQUAD_WRITE_OUTCOME_UNKNOWN` | A squad write timed out before its outcome was known. | Read the exact squad and compare its hash; never retry automatically. |
+| `SQUAD_READBACK_FAILED` | EA acknowledged a write but fresh squad state does not match the requested fields. | Inspect `squad_query` before another write. |
 | `POLICY_DENIED` | The request exceeds user policy. | Reduce or remove the denied actions; Agent parameters cannot override policy. |
 | `EXECUTION_DISABLED` | Policy mode is `observe`. | Complete read-only acceptance and change policy separately. |
 | `IDEMPOTENCY_CONFLICT` | A key was reused with different parameters. | Use the recorded result or a new key for a different operation. |
@@ -212,4 +235,4 @@ Save and submit reconciliation are narrow localhost daemon RPCs, not additional 
 
 ## Tool-selection rule
 
-Catalog facts use `catalog_query`; owned-item state uses `club_query`; current listings use `market_search`; combined historical/economic context uses `price_context`; current objectives/evolutions/SBC discovery uses `content_query`; exact SBC constraints and workflows use `sbc_query`. This division prevents overlapping tools from returning subtly different meanings for the same question.
+Catalog facts use `catalog_query`; owned-item state uses `club_query`; playing squad, formation and tactics state uses `squad_query`; current listings use `market_search`; combined historical/economic context uses `price_context`; current objectives/evolutions/SBC discovery uses `content_query`; exact SBC constraints and workflows use `sbc_query`.

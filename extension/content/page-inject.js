@@ -89,7 +89,7 @@
       && /\/sbs\/challenge\/\d+\/?$/.test(path)
       && !url.searchParams.has('skipUserSquadValidation')
     ) return;
-    const mutationPaths = ['/auctionhouse', '/item', '/tradepile', '/sbs/', '/packs/', '/scmp/', '/academy/'];
+    const mutationPaths = ['/auctionhouse', '/item', '/tradepile', '/squad', '/sbs/', '/packs/', '/scmp/', '/academy/'];
     if (!mutationPaths.some((value) => path.includes(value))) return;
     window.postMessage({
       source: SOURCE_PAGE,
@@ -1205,6 +1205,280 @@
     return { appServices, item };
   }
 
+  function enumCatalog(value) {
+    if (!value || typeof value !== 'object') return [];
+    return Object.entries(value)
+      .filter(([name, id]) => Number.isInteger(id) && Number.isNaN(Number(name)))
+      .map(([name, id]) => ({ id, name }))
+      .sort((left, right) => left.id - right.id);
+  }
+
+  function enumName(value, id) {
+    if (!value || id === null || id === undefined) return null;
+    return typeof value[id] === 'string' ? value[id] : null;
+  }
+
+  function plainFormation(formation) {
+    if (!formation) return null;
+    return {
+      id: readValue(formation, ['id'], ['getId']),
+      name: readValue(formation, ['name'], ['getName']),
+      display_name: readValue(formation, ['displayName'], ['getDisplayName']),
+      positions: collectionValues(
+        typeof formation?.getPositions === 'function' ? formation.getPositions() : formation?.positions
+      ).map((position, index) => ({
+        slot_index: index,
+        id: readValue(position, ['id', 'positionId']),
+        name: readValue(position, ['name'], ['getName']),
+        display_name: readValue(position, ['displayName'], ['getDisplayName']),
+        unique_id: readValue(position, ['uniqueId', 'uniquePosition']),
+        general_position: readValue(position, ['generalPosition', 'typeId']),
+      })),
+    };
+  }
+
+  function plainTacticRole(role, slotIndex = null) {
+    if (!role) return null;
+    const value = typeof role?.value === 'function' ? role.value() : role;
+    const position = readValue(value, ['position']) ?? readValue(role, ['position']);
+    const type = readValue(value, ['type']) ?? readValue(role, ['type', '_type']);
+    const variation = readValue(value, ['variation']) ?? readValue(role, ['variation', '_variation']);
+    return {
+      slot_index: slotIndex,
+      position,
+      position_group: readValue(role, ['positionGroup']),
+      role_id: type,
+      role_name: enumName(globalThis.TacticPlayerRole, type),
+      variation_id: variation,
+      variation_name: enumName(globalThis.TacticPlayerVariation, variation),
+      bitwise: typeof role?.toBitwiseInteger === 'function' ? role.toBitwiseInteger() : null,
+    };
+  }
+
+  function plainTactic(tactic) {
+    if (!tactic) return null;
+    const formation = typeof tactic?.getFormation === 'function'
+      ? tactic.getFormation()
+      : tactic.formation;
+    const instructions = collectionValues(
+      typeof tactic?.getInstructions === 'function' ? tactic.getInstructions() : tactic.instructions
+    ).map((role, index) => plainTacticRole(role, index));
+    return {
+      id: readValue(tactic, ['id'], ['getId']),
+      squad_id: readValue(tactic, ['squadId'], ['getSquadId']),
+      name: readValue(tactic, ['name', 'customName']),
+      state: readValue(tactic, ['state'], ['getState']),
+      state_name: enumName(globalThis.TacticState, readValue(tactic, ['state'], ['getState'])),
+      customized: typeof tactic?.isCustomized === 'function' ? Boolean(tactic.isCustomized()) : null,
+      modified: typeof tactic?.isModified === 'function' ? Boolean(tactic.isModified()) : null,
+      formation: plainFormation(formation),
+      defensive_style: readValue(tactic, ['defensiveStyle'], ['getDefensiveStyle']),
+      defensive_style_name: enumName(
+        globalThis.SquadTacticDefensiveStyle,
+        readValue(tactic, ['defensiveStyle'], ['getDefensiveStyle'])
+      ),
+      defensive_line_height: readValue(
+        tactic,
+        ['defensiveLineHeight'],
+        ['getDefensiveLineHeight']
+      ),
+      build_up_play_style: readValue(
+        tactic,
+        ['buildUpPlayStyle'],
+        ['getBuildUpPlayStyle']
+      ),
+      build_up_play_style_name: enumName(
+        globalThis.SquadTacticOffensiveStyle,
+        readValue(tactic, ['buildUpPlayStyle'], ['getBuildUpPlayStyle'])
+      ),
+      positions: collectionValues(
+        typeof tactic?.getPositions === 'function' ? tactic.getPositions() : tactic.positions
+      ).map(Number),
+      instructions,
+    };
+  }
+
+  function squadSlotSection(index) {
+    if (index < 11) return 'starting';
+    if (index < 18) return 'substitutes';
+    if (index < 23) return 'reserves';
+    if (index === 23) return 'manager';
+    return 'other';
+  }
+
+  function plainSquadSlot(slot) {
+    if (!slot) return null;
+    const index = Number(readValue(slot, ['index', 'slotIndex'], ['getIndex']));
+    const item = typeof slot?.getItem === 'function' ? slot.getItem() : slot.item;
+    const itemValid = typeof item?.isValid === 'function' ? item.isValid() : Boolean(item);
+    return {
+      slot_index: index,
+      section: squadSlotSection(index),
+      position_id: readValue(slot, ['uniquePosition'], ['getUniquePosition']),
+      position_name: readValue(slot, ['uniquePositionName'], ['getUniquePositionName']),
+      general_position: readValue(slot, ['generalPosition'], ['getGeneralPosition']),
+      general_position_name: readValue(
+        slot,
+        ['generalPositionName'],
+        ['getGeneralPositionName']
+      ),
+      chemistry: readValue(slot, ['chemistry'], ['getChemistry']),
+      kit_number: readValue(slot, ['kitNumber'], ['getKitNumber']),
+      item: itemValid ? serializeItem(item) : null,
+    };
+  }
+
+  function plainSquad(squad, detail = 'summary') {
+    if (!squad) return null;
+    const formation = typeof squad?.getFormation === 'function'
+      ? squad.getFormation()
+      : squad.formation;
+    const summary = {
+      squad_id: readValue(squad, ['id', 'squadId'], ['getId']),
+      name: readValue(squad, ['name'], ['getName']),
+      type: readValue(squad, ['type'], ['getType']),
+      active: typeof squad?.isActive === 'function' ? Boolean(squad.isActive()) : null,
+      concept: typeof squad?.isDream === 'function' ? Boolean(squad.isDream()) : null,
+      formation: plainFormation(formation),
+      rating: readValue(squad, ['rating'], ['getRating']),
+      chemistry: readValue(squad, ['chemistry'], ['getChemistry']),
+      active_tactic_id: readValue(squad, ['activeTacticSlot']),
+      customized_tactics: typeof squad?.hasCustomizedTactics === 'function'
+        ? Boolean(squad.hasCustomizedTactics())
+        : null,
+    };
+    if (detail !== 'detailed') return summary;
+    const manager = typeof squad?.getManager === 'function' ? squad.getManager() : squad.manager;
+    const slots = collectionValues(
+      typeof squad?.getPlayers === 'function' ? squad.getPlayers() : squad.players
+    ).map(plainSquadSlot);
+    if (manager) slots.push(plainSquadSlot(manager));
+    return {
+      ...summary,
+      slots,
+      tactics: collectionValues(
+        typeof squad?.getTacticMentalities === 'function'
+          ? squad.getTacticMentalities()
+          : squad.mentalities
+      ).map(plainTactic),
+    };
+  }
+
+  function squadTacticsCatalog(appServices, squad) {
+    const fieldSlots = collectionValues(
+      typeof squad?.getFieldPlayers === 'function' ? squad.getFieldPlayers() : []
+    );
+    const roleOptions = [];
+    for (const slot of fieldSlots) {
+      const slotIndex = Number(readValue(slot, ['index'], ['getIndex']));
+      const positionId = readValue(slot, ['generalPosition'], ['getGeneralPosition']);
+      const roleIds = collectionValues(appServices.Squad.getRoleIdsForPosition?.(positionId));
+      roleOptions.push({
+        slot_index: slotIndex,
+        position_id: positionId,
+        roles: roleIds.map((roleId) => ({
+          role_id: roleId,
+          role_name: enumName(globalThis.TacticPlayerRole, roleId),
+          variations: collectionValues(
+            globalThis.UTPlayerRoleVO?.getVariationsForRoleAndPositionId?.(
+              positionId,
+              roleId
+            )
+          ).map((variationId) => ({
+            variation_id: variationId,
+            variation_name: enumName(globalThis.TacticPlayerVariation, variationId),
+          })),
+        })),
+      });
+    }
+    return {
+      formations: collectionValues(globalThis.repositories?.Squad?.getFormations?.())
+        .map(plainFormation),
+      tactic_profile_slots: enumCatalog(globalThis.TacticsProfileSlot),
+      tactic_states: enumCatalog(globalThis.TacticState),
+      defensive_styles: enumCatalog(globalThis.SquadTacticDefensiveStyle),
+      build_up_play_styles: enumCatalog(globalThis.SquadTacticOffensiveStyle),
+      roles: enumCatalog(globalThis.TacticPlayerRole),
+      variations: enumCatalog(globalThis.TacticPlayerVariation),
+      role_options: roleOptions,
+    };
+  }
+
+  async function loadSquadList(detail = 'summary', requestedSquadId = null) {
+    const appServices = requireWebAppServices();
+    appServices.Squad.resetSquadsCache?.();
+    const response = await observeOnce(appServices.Squad.requestSquadList());
+    const payload = response.data ?? response.response ?? {};
+    const listed = collectionValues(payload.squads);
+    const activeSquadId = readValue(payload, ['activeSquadId'])
+      ?? appServices.Squad.getActiveSquadId?.();
+    let selected = listed;
+    if (requestedSquadId !== null && requestedSquadId !== undefined) {
+      selected = listed.filter(
+        (squad) => String(readValue(squad, ['id', 'squadId'], ['getId'])) === String(requestedSquadId)
+      );
+      if (!selected.length) {
+        throw Object.assign(new Error(`Squad ${requestedSquadId} was not found.`), {
+          code: 'SQUAD_NOT_FOUND',
+        });
+      }
+    }
+    if (detail === 'detailed') {
+      const loaded = [];
+      for (const listedSquad of selected) {
+        const squadId = readValue(listedSquad, ['id', 'squadId'], ['getId']);
+        const squadResponse = await observeOnce(appServices.Squad.requestSquadById(squadId));
+        const squadPayload = squadResponse.data ?? squadResponse.response ?? {};
+        if (squadPayload.squad) loaded.push(squadPayload.squad);
+      }
+      selected = loaded;
+    }
+    const squads = selected.map((squad) => plainSquad(squad, detail));
+    const catalogSquad = selected.find(
+      (squad) => String(readValue(squad, ['id', 'squadId'], ['getId'])) === String(activeSquadId)
+    ) ?? selected[0] ?? null;
+    return {
+      active_squad_id: activeSquadId,
+      max_squads: appServices.Squad.getMaxSquads?.() ?? null,
+      list_full: Boolean(payload.listFull),
+      squads,
+      catalog: detail === 'detailed' && catalogSquad
+        ? squadTacticsCatalog(appServices, catalogSquad)
+        : null,
+      status: response.status ?? null,
+    };
+  }
+
+  async function loadExactSquad(squadId) {
+    const appServices = requireWebAppServices();
+    const response = await observeOnce(appServices.Squad.requestSquadById(Number(squadId)));
+    const payload = response.data ?? response.response ?? {};
+    if (!payload.squad) {
+      throw Object.assign(new Error(`Squad ${squadId} was not found.`), {
+        code: 'SQUAD_NOT_FOUND',
+      });
+    }
+    return { appServices, squad: payload.squad, status: response.status ?? null };
+  }
+
+  function requireFormation(formationId) {
+    const formation = globalThis.repositories?.Squad?.getFormationById?.(Number(formationId));
+    if (!formation) {
+      throw Object.assign(new Error(`Formation ${formationId} is not supported by the current Web App.`), {
+        code: 'FORMATION_NOT_FOUND',
+      });
+    }
+    return formation;
+  }
+
+  async function freshSquadReadback(squadId) {
+    const loaded = await loadExactSquad(squadId);
+    loaded.squad.setCacheTimestamp?.(0);
+    const refreshed = await observeOnce(loaded.appServices.Squad.requestSquadById(Number(squadId)));
+    const payload = refreshed.data ?? refreshed.response ?? {};
+    return plainSquad(payload.squad ?? loaded.squad, 'detailed');
+  }
+
   const methods = {
     async getSessionStatus() {
       return publicSession();
@@ -1387,6 +1661,119 @@
 
     async getEvolutions() {
       return loadEvolutionSlots();
+    },
+
+    async getSquads(params = {}) {
+      return loadSquadList(
+        params.detail === 'detailed' ? 'detailed' : 'summary',
+        params.squad_id ?? null
+      );
+    },
+
+    async setActiveSquad(params) {
+      const loaded = await loadExactSquad(params.squad_id);
+      const response = await observeOnce(
+        loaded.appServices.Squad.setActiveSquad(Number(params.squad_id))
+      );
+      return {
+        status: response.status ?? null,
+        squad: await freshSquadReadback(params.squad_id),
+        active_squad_id: loaded.appServices.Squad.getActiveSquadId?.() ?? null,
+      };
+    },
+
+    async saveSquad(params) {
+      const loaded = await loadExactSquad(params.squad_id);
+      const squad = loaded.squad;
+      if (params.formation_id !== null && params.formation_id !== undefined) {
+        squad.setFormation(requireFormation(params.formation_id));
+      }
+      const updates = Array.isArray(params.slot_updates) ? params.slot_updates : [];
+      const itemIds = updates
+        .map((value) => value.item_id)
+        .filter((value) => value !== null && value !== undefined)
+        .map(Number);
+      const items = itemIds.length
+        ? await exactOwnedItems(loaded.appServices, itemIds)
+        : [];
+      const itemById = new Map(items.map((item) => [
+        Number(readValue(item, ['id', 'itemId'], ['getId'])),
+        item,
+      ]));
+      for (const update of updates) {
+        const slotIndex = Number(update.slot_index);
+        if (!Number.isInteger(slotIndex) || slotIndex < 0 || slotIndex > 23) {
+          throw Object.assign(new Error(`Invalid squad slot index: ${update.slot_index}.`), {
+            code: 'INVALID_SQUAD_SLOT',
+          });
+        }
+        if (update.item_id === null) squad.removeItemFromSlot(slotIndex);
+        else squad.addItemToSlot(slotIndex, itemById.get(Number(update.item_id)));
+      }
+      const response = await observeOnce(squad.save());
+      return {
+        status: response.status ?? null,
+        squad: await freshSquadReadback(params.squad_id),
+      };
+    },
+
+    async saveSquadTactics(params) {
+      const loaded = await loadExactSquad(params.squad_id);
+      const squad = loaded.squad;
+      const tactic = squad.getTacticMentalityById?.(Number(params.tactic_id));
+      if (!tactic) {
+        throw Object.assign(new Error(`Tactic profile ${params.tactic_id} was not found.`), {
+          code: 'TACTIC_NOT_FOUND',
+        });
+      }
+      if (params.name !== null && params.name !== undefined) tactic.setCustomName(String(params.name));
+      if (params.formation_id !== null && params.formation_id !== undefined) {
+        tactic.setFormation(requireFormation(params.formation_id));
+      }
+      if (params.defensive_style !== null && params.defensive_style !== undefined) {
+        tactic.setDefensiveStyle(Number(params.defensive_style));
+      }
+      if (params.defensive_line_height !== null && params.defensive_line_height !== undefined) {
+        tactic.setDefensiveLineHeight(Number(params.defensive_line_height));
+      }
+      if (params.build_up_play_style !== null && params.build_up_play_style !== undefined) {
+        tactic.setBuildUpPlayStyle(Number(params.build_up_play_style));
+      }
+      for (const instruction of params.instructions || []) {
+        const positionId = Number(instruction.position_id);
+        const roleId = Number(instruction.role_id);
+        const variationId = Number(instruction.variation_id);
+        const allowedRoles = collectionValues(
+          loaded.appServices.Squad.getRoleIdsForPosition?.(positionId)
+        );
+        const allowedVariations = collectionValues(
+          globalThis.UTPlayerRoleVO?.getVariationsForRoleAndPositionId?.(
+            positionId,
+            roleId
+          )
+        );
+        if (!allowedRoles.includes(roleId) || !allowedVariations.includes(variationId)) {
+          throw Object.assign(
+            new Error(`Role ${roleId}/${variationId} is not valid for position ${positionId}.`),
+            { code: 'INVALID_TACTIC_INSTRUCTION' }
+          );
+        }
+        const role = new globalThis.UTPlayerRoleVO(positionId);
+        role.setRoleVariation(roleId, variationId);
+        tactic.setInstructionsBySlotIndex(Number(instruction.slot_index), role);
+      }
+      if (params.active === true) {
+        for (const value of collectionValues(squad.getTacticMentalities?.())) {
+          value.setState(
+            value === tactic ? globalThis.TacticState.ACTIVE : globalThis.TacticState.INACTIVE
+          );
+        }
+      }
+      const response = await observeOnce(loaded.appServices.Squad.saveTactics(squad));
+      return {
+        status: response.status ?? null,
+        squad: await freshSquadReadback(params.squad_id),
+      };
     },
 
     async relistAll() {

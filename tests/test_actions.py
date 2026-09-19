@@ -51,6 +51,42 @@ class FakeBridge:
         return {"ok": True, "data": self.responses.get(method, {})}
 
 
+class SquadBridge:
+    def __init__(self):
+        self.calls = []
+        self.formation_id = 9
+        self.item_id = 1
+
+    def data(self):
+        return {
+            "active_squad_id": 1,
+            "status": 200,
+            "squads": [
+                {
+                    "squad_id": 1,
+                    "name": "Main",
+                    "formation": {"id": self.formation_id},
+                    "slots": [{"slot_index": 0, "item": {"item_id": self.item_id}}],
+                    "tactics": [],
+                }
+            ],
+            "catalog": {},
+        }
+
+    def call(self, method, params):
+        self.calls.append((method, params))
+        if method == "getSquads":
+            return {"ok": True, "data": self.data()}
+        if method == "saveSquad":
+            if params.get("formation_id") is not None:
+                self.formation_id = params["formation_id"]
+            for update in params.get("slot_updates") or []:
+                if update["slot_index"] == 0:
+                    self.item_id = update["item_id"]
+            return {"ok": True, "data": {"status": 200}}
+        return {"ok": True, "data": {"status": 200}}
+
+
 class ActionDispatcherTest(unittest.TestCase):
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
@@ -250,6 +286,34 @@ class ActionDispatcherTest(unittest.TestCase):
         self.assertEqual(exact["status"], "complete")
         self.assertTrue(json.loads(exact["result_json"])["reconciled"])
         self.assertEqual(wrong["status"], "failed")
+
+    def test_squad_save_requires_hash_and_verifies_readback(self):
+        bridge = SquadBridge()
+        dispatcher = ActionDispatcher(bridge, self.runtime, lambda kind: None)
+        current = dispatcher._read_squad(1)["squad"]
+        result = dispatcher(
+            {
+                "action_id": "squad-1",
+                "type": "save_squad",
+                "squad_id": 1,
+                "expected_squad_hash": current["squad_hash"],
+                "formation_id": 8,
+                "slot_updates": [],
+            }
+        )
+        self.assertEqual(result["after"]["formation"]["id"], 8)
+        with self.assertRaises(FC27Error) as stale:
+            dispatcher(
+                {
+                    "action_id": "squad-2",
+                    "type": "save_squad",
+                    "squad_id": 1,
+                    "expected_squad_hash": current["squad_hash"],
+                    "formation_id": 9,
+                    "slot_updates": [],
+                }
+            )
+        self.assertEqual(stale.exception.code, "STALE_SQUAD_STATE")
 
 
 if __name__ == "__main__":

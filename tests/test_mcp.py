@@ -90,6 +90,25 @@ class IdentityBridge:
                     }
                 ],
             },
+            "getSquads": {
+                "status": 200,
+                "active_squad_id": 7,
+                "max_squads": 10,
+                "list_full": False,
+                "squads": [
+                    {
+                        "squad_id": 7,
+                        "name": "Main",
+                        "formation": {"id": 8, "name": "f433", "display_name": "4-3-3"},
+                        "rating": 83,
+                        "chemistry": 31,
+                        "active_tactic_id": 1,
+                        "slots": [{"slot_index": 0, "item": {"item_id": 100}}],
+                        "tactics": [],
+                    }
+                ],
+                "catalog": {"formations": [{"id": 8, "name": "f433"}]},
+            },
             "getSbcSets": {
                 "status": 200,
                 "sets": [{"id": 4, "name": "Bronze Upgrade", "completed": False}],
@@ -162,7 +181,7 @@ class MCPTest(unittest.TestCase):
     def test_tools_list_contains_exact_catalog(self):
         response = self.daemon.mcp.handle({"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}})
         names = [tool["name"] for tool in response["result"]["tools"]]
-        self.assertEqual(len(TOOLS), 11)
+        self.assertEqual(len(TOOLS), 12)
         self.assertEqual(names, [tool["name"] for tool in TOOLS])
 
     def test_content_query_schema_exposes_season_sections_and_states(self):
@@ -174,6 +193,19 @@ class MCPTest(unittest.TestCase):
         self.assertIn("claimable", properties["state"]["enum"])
         self.assertNotIn("scope", properties)
         self.assertNotIn("include_completed", properties)
+
+    def test_squad_query_schema_and_live_result(self):
+        tool = next(value for value in TOOLS if value["name"] == "squad_query")
+        properties = tool["inputSchema"]["properties"]
+        self.assertEqual(properties["selection"]["enum"], ["all", "active", "exact"])
+        self.daemon.bridge = IdentityBridge()
+        result = self.daemon.call_tool(
+            "squad_query", {"selection": "active", "detail": "detailed"}
+        )
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["data"]["active_squad_id"], 7)
+        self.assertEqual(result["data"]["squads"][0]["formation"]["id"], 8)
+        self.assertEqual(len(result["data"]["squads"][0]["squad_hash"]), 64)
 
     def test_sbc_solve_schema_exposes_exact_required_item_ids(self):
         tool = next(value for value in TOOLS if value["name"] == "sbc_solve")
