@@ -67,6 +67,15 @@ if (!pageInject.includes('const savedIds = savedSbcItemIds(squad);')) {
 }
 if (!pageInject.includes("type: 'FC27_ACCOUNT_CHANGED'")) errors.push('account-change observation missing');
 if (!pageInject.includes('async getObjectives()')) errors.push('objective reader missing');
+if (!pageInject.includes('requestMetaObjectiveGroups')) errors.push('FC Objectives group reader missing');
+if (!pageInject.includes('requestCampaignProgress')) errors.push('FC Objectives progress reader missing');
+if (!pageInject.includes("typeof group?.isRedeemed === 'function'")) errors.push('redeemed objective-group completion handling missing');
+if (!pageInject.includes('plainObjectiveCampaign')) errors.push('compact objective campaign serialization missing');
+if (!pageInject.includes('plainObjectiveRewards')) errors.push('compact objective reward serialization missing');
+if (!pageInject.includes('plainSeasonLevels')) errors.push('compact FC Season level serialization missing');
+if (!pageInject.includes('lifecycleSets')) errors.push('Evolution lifecycle evidence missing');
+if (!pageInject.includes('requestPages')) errors.push('Evolution pagination missing');
+if (!pageInject.includes("display_group: started ? 'my_evolutions'")) errors.push('My Evolutions display group missing');
 if (!pageInject.includes('async getEvolutions()')) errors.push('evolution reader missing');
 if (!pageInject.includes('requestSlotsByCategory')) errors.push('available evolution category reader missing');
 

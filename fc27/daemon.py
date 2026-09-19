@@ -324,32 +324,78 @@ class FC27Daemon:
                         recovery="Use source=ea for objective or SBC account content.",
                     )
                 if source == "futgg":
-                    raw = self.futgg_content.evolutions(options["scope"])
+                    raw = self.futgg_content.evolutions(
+                        self.content.futgg_scope(options)
+                    )
                     return self._envelope(
                         "futgg",
                         self.content.normalize_futgg_evolutions(raw, options),
                     )
-                if self.bridge.health()["connected"]:
-                    method = {
-                        "objective": "getObjectives",
-                        "evolution": "getEvolutions",
-                        "sbc": "getSbcSets",
-                    }[content_type]
-                    try:
-                        raw = self._browser_tool(method, {})
-                    except FC27Error:
-                        if source != "auto" or content_type != "evolution":
-                            raise
-                    else:
-                        return self._envelope(
-                            "ea_webapp",
-                            self.content.normalize_ea(content_type, raw, options),
+                browser_method = {
+                    "season": "getObjectives",
+                    "objective": "getObjectives",
+                    "evolution": "getEvolutions",
+                    "sbc": "getSbcSets",
+                }[content_type]
+                if source == "ea":
+                    if not self.bridge.health()["connected"]:
+                        raise FC27Error(
+                            "EA_SESSION_REQUIRED",
+                            "An authenticated FC27 Web App session is required for this account content.",
+                            retryable=True,
+                            recovery="Open the FC27 Web App and sign in; the extension connects automatically.",
                         )
-                if source == "auto" and content_type == "evolution":
-                    raw = self.futgg_content.evolutions(options["scope"])
+                    raw = self._browser_tool(browser_method, {})
                     return self._envelope(
-                        "futgg",
-                        self.content.normalize_futgg_evolutions(raw, options),
+                        "ea_webapp",
+                        self.content.normalize_ea(content_type, raw, options),
+                    )
+                if content_type == "evolution":
+                    ea_raw = None
+                    ea_error = None
+                    if self.bridge.health()["connected"]:
+                        try:
+                            ea_raw = self._browser_tool(browser_method, {})
+                        except FC27Error as error:
+                            ea_error = error
+                    futgg_raw = None
+                    futgg_error = None
+                    try:
+                        futgg_raw = self.futgg_content.evolutions(
+                            self.content.futgg_scope(options)
+                        )
+                    except FC27Error as error:
+                        futgg_error = error
+                    if ea_raw is not None and futgg_raw is not None:
+                        return self._envelope(
+                            "ea_webapp+futgg",
+                            self.content.merge_evolutions(ea_raw, futgg_raw, options),
+                        )
+                    if ea_raw is not None:
+                        data = self.content.normalize_ea(content_type, ea_raw, options)
+                        data["source_meta"]["merge_warning"] = {
+                            "missing_source": "futgg",
+                            "error": futgg_error.as_dict() if futgg_error else None,
+                        }
+                        return self._envelope("ea_webapp", data, complete=False)
+                    if futgg_raw is not None:
+                        data = self.content.normalize_futgg_evolutions(futgg_raw, options)
+                        data["source_meta"]["merge_warning"] = {
+                            "missing_source": "ea",
+                            "error": ea_error.as_dict() if ea_error else None,
+                        }
+                        return self._envelope("futgg", data, complete=False)
+                    raise ea_error or futgg_error or FC27Error(
+                        "CONTENT_SOURCE_UNAVAILABLE",
+                        "Neither EA nor FUT.GG Evolution content is currently available.",
+                        retryable=True,
+                        recovery="Open the authenticated Web App and verify FUT.GG connectivity before retrying.",
+                    )
+                if self.bridge.health()["connected"]:
+                    raw = self._browser_tool(browser_method, {})
+                    return self._envelope(
+                        "ea_webapp",
+                        self.content.normalize_ea(content_type, raw, options),
                     )
                 raise FC27Error(
                     "EA_SESSION_REQUIRED",

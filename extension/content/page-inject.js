@@ -330,6 +330,95 @@
     return [];
   }
 
+  function plainObjectiveRewards(value) {
+    const rewardSets = collectionValues(value);
+    const sets = rewardSets.length ? rewardSets : value && typeof value === 'object' ? [value] : [];
+    const rewards = [];
+    for (const set of sets) {
+      for (const reward of collectionValues(readValue(set, ['rewards']))) {
+        rewards.push({
+          type: readValue(reward, ['type']),
+          value: readValue(reward, ['value']),
+          count: readValue(reward, ['count']),
+          asset_id: readValue(reward, ['assetId']),
+          game_mode: readValue(reward, ['gameMode']),
+          tradable: readValue(reward, ['tradable']),
+          premium: readValue(reward, ['isPremium']),
+          is_xp: readValue(reward, ['isXP']) === true
+            || String(readValue(reward, ['type']) || '').toLowerCase() === 'season_xp',
+        });
+      }
+    }
+    return rewards;
+  }
+
+  function plainSeasonTrack(level, currentXp) {
+    if (!level) return null;
+    const requiredXp = Number(readValue(level, ['xp', 'completeXP']) ?? 0);
+    const claimed = typeof level?.isClaimed === 'function' ? Boolean(level.isClaimed()) : null;
+    const claimable = typeof level?.isClaimable === 'function'
+      ? Boolean(level.isClaimable(currentXp))
+      : currentXp >= requiredXp && claimed !== true;
+    return {
+      state: readValue(level, ['state', '_state', 'status']),
+      unlocked: currentXp >= requiredXp,
+      claimable,
+      claimed,
+      selected_reward_id: readValue(level, ['userSelectedRewardId', 'selectedRewardId']),
+      reward_flow: readValue(level, ['rewardSetFlow', 'rewardFlow']),
+      rewards: plainObjectiveRewards(readValue(level, ['rewardSets', 'rewards'])),
+    };
+  }
+
+  function plainSeasonLevels(campaign) {
+    if (!campaign) return [];
+    const currentXp = Number(readValue(campaign, ['xp', '_xp', 'totalUserXP']) ?? 0);
+    const standardByLevel = new Map(
+      collectionValues(readValue(campaign, ['levels']))
+        .map((level) => [Number(readValue(level, ['id', 'level'])), level])
+    );
+    const premiumByLevel = new Map(
+      collectionValues(readValue(campaign, ['premiumLevels']))
+        .map((level) => [Number(readValue(level, ['id', 'level'])), level])
+    );
+    const levelIds = [...new Set([...standardByLevel.keys(), ...premiumByLevel.keys()])]
+      .filter(Number.isFinite)
+      .sort((left, right) => left - right);
+    return levelIds.map((levelId) => {
+      const standard = standardByLevel.get(levelId) ?? null;
+      const premium = premiumByLevel.get(levelId) ?? null;
+      const requiredXp = Number(readValue(standard ?? premium, ['xp', 'completeXP']) ?? 0);
+      return {
+        level: levelId,
+        required_xp: requiredXp,
+        remaining_xp: Math.max(0, requiredXp - currentXp),
+        standard: plainSeasonTrack(standard, currentXp),
+        premium: plainSeasonTrack(premium, currentXp),
+      };
+    });
+  }
+
+  function plainObjectiveCampaign(campaign) {
+    if (!campaign) return null;
+    const levelCount = new Set([
+      ...collectionValues(readValue(campaign, ['levels'])).map((level) => readValue(level, ['id', 'level'])),
+      ...collectionValues(readValue(campaign, ['premiumLevels'])).map((level) => readValue(level, ['id', 'level'])),
+    ]).size;
+    return {
+      id: readValue(campaign, ['id', 'seasonId']),
+      title: readValue(campaign, ['title', 'name']),
+      subtitle: readValue(campaign, ['subtitle', 'description']),
+      start_time: readValue(campaign, ['startTime']),
+      end_time: readValue(campaign, ['endTime']),
+      current_xp: readValue(campaign, ['xp', '_xp', 'totalUserXP']),
+      current_level: readValue(campaign, ['currentLevel', 'currentUserLevel']),
+      current_level_threshold: readValue(campaign, ['currentLevelThreshold']),
+      has_premium: Boolean(readValue(campaign, ['hasPremium'])),
+      user_token_count: readValue(campaign, ['userTokenCount']),
+      level_count: levelCount,
+    };
+  }
+
   function plainObjectiveTask(task) {
     const target = Number(readValue(task, ['multiplier', 'target', 'requiredProgress']) ?? 0);
     const progress = Number(readValue(task, ['progress', '_progress', 'currentProgress']) ?? 0);
@@ -347,22 +436,30 @@
       completed,
       redeemed,
       claimable: typeof task?.isClaimable === 'function' ? Boolean(task.isClaimable()) : null,
-      rewards: plainValue(readValue(task, ['rewards', 'rewardSet']), 0, new WeakSet(), 8),
+      rewards: plainObjectiveRewards(readValue(task, ['rewards', 'rewardSet'])),
     };
   }
 
-  function plainObjectiveGroup(group) {
+  function plainObjectiveGroup(group, objectiveScope = 'ut') {
     const tasks = collectionValues(
       typeof group?.getObjectives === 'function' ? group.getObjectives() : group?.objectives
     ).map(plainObjectiveTask);
     const rawRequiredTasks = Number(readValue(group, ['requiredObjectivesCount', 'objectivesCompletionCount']) ?? 0);
     const requiredTasks = rawRequiredTasks > 0 ? rawRequiredTasks : tasks.length;
     const completedTasks = tasks.filter((task) => task.completed).length;
+    const redeemed = typeof group?.isRedeemed === 'function' ? Boolean(group.isRedeemed()) : null;
+    const completed = redeemed === true
+      || (typeof group?.isCompleted === 'function' && Boolean(group.isCompleted()))
+      || (requiredTasks > 0 && completedTasks >= requiredTasks);
+    const compositeId = readValue(group, ['compositeId']);
     return {
       id: readValue(group, ['id', 'groupId']),
-      composite_id: readValue(group, ['compositeId']),
+      composite_id: compositeId,
+      content_type: String(compositeId || '').split('-', 1)[0] || null,
       title: readValue(group, ['title', 'name']),
       subtitle: readValue(group, ['subtitle', 'subTitle']),
+      objective_scope: objectiveScope,
+      game_mode: readValue(group, ['gameMode']),
       type: readValue(group, ['type', 'groupType']),
       state: readValue(group, ['state', '_state', 'groupState']),
       start_time: readValue(group, ['startTime']),
@@ -371,47 +468,96 @@
       times_completed: readValue(group, ['timesCompleted']),
       required_tasks: requiredTasks,
       completed_tasks: completedTasks,
-      completed: typeof group?.isCompleted === 'function'
-        ? Boolean(group.isCompleted())
-        : requiredTasks > 0 && completedTasks >= requiredTasks,
+      completed,
+      redeemed,
       claimable: typeof group?.isClaimable === 'function' ? Boolean(group.isClaimable()) : null,
+      locked_by: collectionValues(readValue(group, ['lockedBy', 'lockedByGroupIds'])),
       tasks,
-      rewards: plainValue(readValue(group, ['rewards', 'rewardSet']), 0, new WeakSet(), 8),
+      rewards: plainObjectiveRewards(readValue(group, ['rewards', 'rewardSet'])),
     };
   }
 
-  function plainObjectiveCategory(category) {
+  function plainObjectiveCategory(category, objectiveScope = 'ut') {
     return {
       id: readValue(category, ['id', 'categoryId']),
       name: readValue(category, ['name', 'title']),
       priority: readValue(category, ['priority']),
       groups: collectionValues(
         typeof category?.getGroups === 'function' ? category.getGroups() : category?.groups
-      ).map(plainObjectiveGroup),
+      ).map((group) => plainObjectiveGroup(group, objectiveScope)),
     };
   }
 
-  function plainEvolutionSlot(slot, category = null) {
-    const levels = collectionValues(slot?.levels).map((level) => ({
-      id: readValue(level, ['id', 'levelId']),
-      name: readValue(level, ['name', 'title']),
-      state: readValue(level, ['state', '_state', 'status']),
-      completed: typeof level?.isComplete === 'function' ? Boolean(level.isComplete()) : null,
-      claimable: typeof level?.isClaimable === 'function' ? Boolean(level.isClaimable()) : null,
-      objectives: collectionValues(level?.objectives).map(plainObjectiveTask),
-      rewards: plainValue(readValue(level, ['awards', 'rewards']), 0, new WeakSet(), 8),
+  function plainEvolutionAwards(value) {
+    return collectionValues(value).map((award) => ({
+      type: readValue(award, ['type', 'id']),
+      value: readValue(award, ['value', 'delta']),
+      count: readValue(award, ['count']),
+      max_value: readValue(award, ['maxValue']),
+      priority: readValue(award, ['priority']),
     }));
+  }
+
+  function plainEvolutionRequirements(value) {
+    return collectionValues(value).map((requirement) => ({
+      attribute: readValue(requirement, ['attribute']),
+      scope: readValue(requirement, ['scope']),
+      targets: collectionValues(readValue(requirement, ['targets'])),
+    }));
+  }
+
+  function plainEvolutionCosts(value) {
+    return collectionValues(value).map((cost) => ({
+      type: readValue(cost, ['type', 'name']),
+      amount: readValue(cost, ['amount', 'funds']),
+    }));
+  }
+
+  function evolutionSectionName(categoryName) {
+    return String(categoryName || '')
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '_')
+      .replace(/^_+|_+$/g, '') || 'evolutions';
+  }
+
+  function plainEvolutionSlot(slot, category = null, lifecycle = {}) {
+    const levels = collectionValues(slot?.levels).map((level) => {
+      const choices = readValue(level, ['userSelectableAwards']);
+      return {
+        index: readValue(level, ['id', 'levelId', 'level']),
+        name: readValue(level, ['name', 'title']),
+        state: readValue(level, ['state', '_state', 'status']),
+        completed: typeof level?.isComplete === 'function' ? Boolean(level.isComplete()) : null,
+        claimable: typeof level?.isClaimable === 'function' ? Boolean(level.isClaimable()) : null,
+        selected_award_index: readValue(level, ['selectedAwardIndex']),
+        has_upgrade_choices: Boolean(choices && Object.keys(choices).length),
+        objectives: collectionValues(level?.objectives).map(plainObjectiveTask),
+        ea_rewards: plainEvolutionAwards(readValue(level, ['awards', 'rewards'])),
+      };
+    });
+    const itemId = Number(readValue(slot, ['id', 'slotId']));
     const player = readValue(slot, ['player']);
+    const categoryName = readValue(category, ['description', 'name']);
+    const status = readValue(slot, ['status', '_status']);
+    const active = typeof slot?.isActive === 'function' ? Boolean(slot.isActive()) : lifecycle.active === true;
+    const started = typeof slot?.isStarted === 'function'
+      ? Boolean(slot.isStarted())
+      : active || lifecycle.inactive === true;
     const completed = typeof slot?.isSlotComplete === 'function'
       ? Boolean(slot.isSlotComplete())
       : levels.length > 0 && levels.every((level) => level.completed === true);
+    const expired = lifecycle.expired === true
+      || (typeof slot?.hasEndTimeExpired === 'function' && Boolean(slot.hasEndTimeExpired()));
     return {
-      id: readValue(slot, ['id', 'slotId']),
+      id: itemId,
+      ea_id: itemId,
       name: readValue(slot, ['slotName', 'name', 'title']),
       description: readValue(slot, ['slotDescription', 'description']),
       category_id: readValue(slot, ['categoryId']),
-      category_name: readValue(category, ['description', 'name']),
-      status: readValue(slot, ['status', '_status']),
+      category_name: categoryName,
+      display_group: started ? 'my_evolutions' : evolutionSectionName(categoryName),
+      status,
       timed: Boolean(readValue(slot, ['timed'])),
       enrollment_end_time: readValue(slot, ['endTimePurchaseVisibility']),
       end_time: readValue(slot, ['endTime']),
@@ -419,13 +565,22 @@
       remaining_repetitions: typeof slot?.getRemainingRepetitions === 'function'
         ? slot.getRemainingRepetitions()
         : null,
-      active: typeof slot?.isActive === 'function' ? Boolean(slot.isActive()) : null,
-      started: typeof slot?.isStarted === 'function' ? Boolean(slot.isStarted()) : null,
-      claimable: typeof slot?.isClaimable === 'function' ? Boolean(slot.isClaimable()) : null,
+      refresh_period: readValue(slot, ['refreshPeriod']),
+      repetition_index: readValue(slot, ['repetitionIndex']),
+      real_player_id: readValue(slot, ['realPlayerId']),
+      training_time: readValue(slot, ['trainingTime', 'readableTrainingTime']),
+      active,
+      started,
+      paused: lifecycle.inactive === true || String(status || '').toUpperCase() === 'INACTIVE',
+      claimable: lifecycle.reward_ready === true
+        || (typeof slot?.isClaimable === 'function' ? Boolean(slot.isClaimable()) : false),
       completed,
+      expired,
+      availability: started ? 'account_started' : 'account_available',
       player: typeof player?.isValid === 'function' && player.isValid() ? serializeItem(player) : null,
-      requirements: plainValue(readValue(slot, ['eligibilityRequirements']), 0, new WeakSet(), 8),
-      prices: plainValue(readValue(slot, ['prices']), 0, new WeakSet(), 6),
+      ea_requirements: plainEvolutionRequirements(readValue(slot, ['eligibilityRequirements'])),
+      costs: plainEvolutionCosts(readValue(slot, ['prices'])),
+      lifecycle_evidence: lifecycle,
       levels,
     };
   }
@@ -725,12 +880,69 @@
 
   async function loadObjectives() {
     const appServices = requireWebAppServices();
-    appServices.Objectives.flushCategoryCache?.();
-    const response = await observeOnce(appServices.Objectives.requestCategories());
-    const payload = response.data ?? response.response ?? {};
+    const objectiveService = appServices.Objectives;
+    objectiveService.flushCategoryCache?.();
+    const utResponse = await observeOnce(objectiveService.requestCategories());
+    const utPayload = utResponse.data ?? utResponse.response ?? {};
+    const categories = collectionValues(utPayload.categories ?? utPayload)
+      .map((category) => plainObjectiveCategory(category, 'ut'));
+    const objectiveSources = [{
+      id: 'ut',
+      name: 'Ultimate Team Objectives',
+      status: utResponse.status ?? null,
+    }];
+    let campaign = null;
+
+    if (objectiveService.isMetaFeatureEnabled?.()) {
+      objectiveService.flushCampaignCache?.();
+      const campaignResponse = await observeOnce(objectiveService.requestCampaignDetails());
+      const campaignPayload = campaignResponse.data ?? campaignResponse.response ?? {};
+      campaign = campaignPayload.campaign ?? null;
+
+      const groupsResponse = await observeOnce(objectiveService.requestMetaObjectiveGroups());
+      const groupsPayload = groupsResponse.data ?? groupsResponse.response ?? {};
+      let metaGroups = collectionValues(groupsPayload.metaGroups ?? groupsPayload.groups ?? groupsPayload);
+      let progressStatus = null;
+      const campaignId = readValue(campaign, ['id', 'seasonId']);
+      if (campaignId !== null) {
+        const progressResponse = await observeOnce(objectiveService.requestCampaignProgress(campaignId));
+        const progressPayload = progressResponse.data ?? progressResponse.response ?? {};
+        const progressGroups = collectionValues(progressPayload.groups);
+        if (progressGroups.length) metaGroups = progressGroups;
+        campaign = progressPayload.campaign ?? campaign;
+        progressStatus = progressResponse.status ?? null;
+      }
+
+      categories.push({
+        id: 'fc-meta',
+        name: 'FC Objectives',
+        priority: -1,
+        groups: metaGroups.map((group) => plainObjectiveGroup(group, 'fc')),
+      });
+      objectiveSources.push({
+        id: 'fc',
+        name: 'FC Objectives',
+        status: groupsResponse.status ?? null,
+        progress_status: progressStatus,
+      });
+    }
+
+    const sections = categories.map((category) => ({
+      id: category.id,
+      name: category.name,
+      priority: category.priority,
+      group_count: category.groups.length,
+      completed_count: category.groups.filter((group) => group.completed).length,
+      claimable_count: category.groups.filter((group) => group.claimable === true).length,
+    }));
+
     return {
-      categories: collectionValues(payload.categories ?? payload).map(plainObjectiveCategory),
-      status: response.status ?? null,
+      categories,
+      campaign: plainObjectiveCampaign(campaign),
+      season_levels: plainSeasonLevels(campaign),
+      sections,
+      objective_sources: objectiveSources,
+      status: utResponse.status ?? null,
     };
   }
 
@@ -745,51 +957,106 @@
       value !== undefined && value !== null && values.indexOf(value) === index
     ));
     if (!requestedStates.length) requestedStates.push(null);
-    const byId = new Map();
+    const slotsById = new Map();
     const categoriesById = new Map();
+    const lifecycleSets = {
+      active: new Set(),
+      active_timed: new Set(),
+      inactive: new Set(),
+      reward_ready: new Set(),
+      expired: new Set(),
+      disabled: new Set(),
+      disabled_with_progress: new Set(),
+      stripped: new Set(),
+    };
+    const lifecycleFields = {
+      activeSlotIds: 'active',
+      activeTimedSlotIds: 'active_timed',
+      inactiveSlotIds: 'inactive',
+      rewardReadySlotIds: 'reward_ready',
+      expiredSlotIds: 'expired',
+      disabledSlotIds: 'disabled',
+      disabledWithProgressSlotIds: 'disabled_with_progress',
+      strippedSlotIds: 'stripped',
+    };
     let status = null;
-    for (const slotStatus of requestedStates) {
-      const response = await observeOnce(appServices.Academy.requestAcademyHub({
-        count: 100,
-        offset: 0,
-        sort: 0,
-        slotStatus,
-        forceFetch: true,
-      }));
-      status = response.status ?? status;
-      const payload = response.data ?? response.response ?? {};
+
+    function recordLifecycle(value) {
+      if (!value || typeof value !== 'object') return;
+      for (const [field, lifecycleKey] of Object.entries(lifecycleFields)) {
+        for (const itemId of value[field] || []) {
+          const normalized = Number(itemId);
+          if (Number.isFinite(normalized)) lifecycleSets[lifecycleKey].add(normalized);
+        }
+      }
+    }
+
+    function recordPayload(payload) {
+      recordLifecycle(payload);
       for (const category of collectionValues(payload.categories)) {
         categoriesById.set(String(readValue(category, ['id', 'categoryId'])), category);
       }
       for (const slot of [...collectionValues(payload.slots), ...collectionValues(payload.temporarySlots)]) {
-        const category = categoriesById.get(String(readValue(slot, ['categoryId'])));
-        const normalized = plainEvolutionSlot(slot, category);
-        byId.set(String(normalized.id), normalized);
+        const itemId = Number(readValue(slot, ['id', 'slotId']));
+        if (Number.isFinite(itemId)) slotsById.set(String(itemId), slot);
       }
+    }
+
+    async function requestPages(requestPage, params) {
+      const count = 100;
+      for (let page = 0; page < 20; page += 1) {
+        const response = await observeOnce(requestPage({
+          ...params,
+          count,
+          offset: page * count,
+          sort: 0,
+          forceFetch: true,
+        }));
+        status = response.status ?? status;
+        const payload = response.data ?? response.response ?? {};
+        recordPayload(payload);
+        const pageSlots = collectionValues(payload.slots);
+        if (payload.isFull === true || pageSlots.length < count) break;
+      }
+    }
+
+    for (const slotStatus of requestedStates) {
+      await requestPages(
+        (params) => appServices.Academy.requestAcademyHub(params),
+        { slotStatus }
+      );
     }
     for (const category of categoriesById.values()) {
       const categoryId = readValue(category, ['id', 'categoryId']);
-      const response = await observeOnce(appServices.Academy.requestSlotsByCategory({
-        categoryId,
-        count: 100,
-        offset: 0,
-        sort: 0,
-        forceFetch: true,
-      }));
-      status = response.status ?? status;
-      const payload = response.data ?? response.response ?? {};
-      for (const slot of collectionValues(payload.slots)) {
-        const normalized = plainEvolutionSlot(slot, category);
-        byId.set(String(normalized.id), normalized);
-      }
+      await requestPages(
+        (params) => appServices.Academy.requestSlotsByCategory(params),
+        { categoryId }
+      );
     }
+
+    recordLifecycle(globalThis.repositories?.Academy);
+    const lifecycle = Object.fromEntries(
+      Object.entries(lifecycleSets).map(([key, ids]) => [
+        key,
+        [...ids].sort((left, right) => left - right),
+      ])
+    );
+    const evolutions = Array.from(slotsById.values()).map((slot) => {
+      const itemId = Number(readValue(slot, ['id', 'slotId']));
+      const category = categoriesById.get(String(readValue(slot, ['categoryId'])));
+      const evidence = Object.fromEntries(
+        Object.entries(lifecycleSets).map(([key, ids]) => [key, ids.has(itemId)])
+      );
+      return plainEvolutionSlot(slot, category, evidence);
+    });
     return {
-      evolutions: Array.from(byId.values()),
+      evolutions,
       categories: Array.from(categoriesById.values()).map((category) => ({
         id: readValue(category, ['id', 'categoryId']),
         name: readValue(category, ['description', 'name']),
         count: readValue(category, ['count']),
       })),
+      lifecycle,
       status,
     };
   }

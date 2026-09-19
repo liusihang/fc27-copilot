@@ -39,6 +39,22 @@ class IdentityBridge:
             },
             "getObjectives": {
                 "status": 200,
+                "campaign": {
+                    "id": 88,
+                    "title": "Season 1",
+                    "current_xp": 1550,
+                    "level_count": 30,
+                },
+                "season_levels": [
+                    {
+                        "level": 1,
+                        "required_xp": 1000,
+                        "remaining_xp": 0,
+                        "standard": {"claimed": True, "claimable": False, "unlocked": True, "rewards": []},
+                        "premium": {"claimed": True, "claimable": False, "unlocked": True, "rewards": []},
+                    }
+                ],
+                "sections": [{"id": 1, "name": "Seasonal", "group_count": 1}],
                 "categories": [
                     {
                         "id": 1,
@@ -46,6 +62,7 @@ class IdentityBridge:
                         "groups": [
                             {
                                 "id": 2,
+                                "composite_id": "SEASONAL-2",
                                 "title": "Starter",
                                 "completed": False,
                                 "tasks": [{"id": 3, "title": "Play one match"}],
@@ -56,7 +73,22 @@ class IdentityBridge:
             },
             "getEvolutions": {
                 "status": 200,
-                "evolutions": [{"id": 10, "name": "Intro", "completed": False, "levels": []}],
+                "categories": [{"id": 0, "name": "Evolutions"}],
+                "lifecycle": {"active": [10]},
+                "evolutions": [
+                    {
+                        "id": 10,
+                        "ea_id": 10,
+                        "name": "Intro",
+                        "display_group": "my_evolutions",
+                        "availability": "account_started",
+                        "active": True,
+                        "started": True,
+                        "completed": False,
+                        "expired": False,
+                        "levels": [],
+                    }
+                ],
             },
             "getSbcSets": {
                 "status": 200,
@@ -133,6 +165,16 @@ class MCPTest(unittest.TestCase):
         self.assertEqual(len(TOOLS), 11)
         self.assertEqual(names, [tool["name"] for tool in TOOLS])
 
+    def test_content_query_schema_exposes_season_sections_and_states(self):
+        tool = next(value for value in TOOLS if value["name"] == "content_query")
+        properties = tool["inputSchema"]["properties"]
+        self.assertIn("season", properties["content_type"]["enum"])
+        self.assertIn("fc_pro", properties["section"]["enum"])
+        self.assertIn("my_evolutions", properties["section"]["enum"])
+        self.assertIn("claimable", properties["state"]["enum"])
+        self.assertNotIn("scope", properties)
+        self.assertNotIn("include_completed", properties)
+
     def test_sbc_solve_schema_exposes_exact_required_item_ids(self):
         tool = next(value for value in TOOLS if value["name"] == "sbc_solve")
         objective = tool["inputSchema"]["properties"]["objective"]
@@ -197,6 +239,66 @@ class MCPTest(unittest.TestCase):
         self.assertEqual(result["data"]["source"], "ea")
         self.assertEqual(result["data"]["items"][0]["title"], "Starter")
         self.assertEqual(result["data"]["items"][0]["tasks"][0]["id"], 3)
+        self.assertEqual(result["data"]["items"][0]["content_type"], "SEASONAL")
+        self.assertEqual(result["data"]["source_meta"]["sections"][0]["name"], "Seasonal")
+
+    def test_content_query_reads_compact_fc_season_levels(self):
+        self.daemon.bridge = IdentityBridge()
+        result = self.daemon.call_tool(
+            "content_query",
+            {
+                "content_type": "season",
+                "source": "ea",
+                "state": "all",
+                "detail": "detailed",
+            },
+        )
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["data"]["items"][0]["level"], 1)
+        self.assertEqual(result["data"]["source_meta"]["campaign"]["current_xp"], 1550)
+
+    def test_content_query_auto_merges_ea_and_futgg_evolutions(self):
+        class FixtureContentClient:
+            def evolutions(self, scope):
+                self.scope = scope
+                return {
+                    "manifest_version": 1,
+                    "manifest_key": "active-evolutions",
+                    "manifest_hash": "hash",
+                    "evolutions": [
+                        {
+                            "id": "futgg:100",
+                            "futgg_id": 100,
+                            "ea_id": 10,
+                            "name": "Intro",
+                            "expired": False,
+                            "levels": [],
+                        },
+                        {
+                            "id": "futgg:101",
+                            "futgg_id": 101,
+                            "ea_id": 999999,
+                            "name": "Future EVO [SP 10]",
+                            "display_group": "public",
+                            "availability": "public",
+                            "expired": False,
+                            "levels": [],
+                        },
+                    ],
+                }
+
+        self.daemon.bridge = IdentityBridge()
+        self.daemon.futgg_content = FixtureContentClient()
+        result = self.daemon.call_tool(
+            "content_query",
+            {"content_type": "evolution", "source": "auto", "state": "current"},
+        )
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["meta"]["source"], "ea_webapp+futgg")
+        self.assertEqual(result["data"]["total_count"], 2)
+        intro = next(item for item in result["data"]["items"] if item["ea_id"] == 10)
+        self.assertEqual(intro["futgg_id"], 100)
+        self.assertEqual(intro["source_evidence"]["match_method"], "ea_id")
 
     def test_content_query_uses_futgg_evolutions_without_account(self):
         class FixtureContentClient:
@@ -205,7 +307,17 @@ class MCPTest(unittest.TestCase):
                     "manifest_version": 1,
                     "manifest_key": "active-evolutions",
                     "manifest_hash": "hash",
-                    "evolutions": [{"id": 10, "name": "Intro", "expired": False, "levels": []}],
+                    "evolutions": [
+                        {
+                            "id": "futgg:10",
+                            "futgg_id": 10,
+                            "name": "Intro",
+                            "display_group": "public",
+                            "availability": "public",
+                            "expired": False,
+                            "levels": [],
+                        }
+                    ],
                 }
 
         self.daemon.futgg_content = FixtureContentClient()

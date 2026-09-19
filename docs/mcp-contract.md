@@ -100,16 +100,20 @@ Returns current and historical FUT.GG prices, EA scan history, holdings, listed 
 
 ### `FC27:content_query`
 
-Discovers current objective groups, evolution slots, or SBC sets through one bounded list interface.
+Discovers FC Season levels, objective groups, Evolution slots, or SBC sets through one bounded list interface.
 
-- `content_type=objective`: EA account categories, groups, task progress and rewards.
-- `content_type=evolution`: EA account slots/progress or FUT.GG public evolution definitions.
+- `content_type=season`: compact standard and Premium FC Season level rewards, required SP, remaining SP, unlock, claimable, and claimed state.
+- `content_type=objective`: EA account categories, groups, task progress and rewards. `section` selects `fc_objectives`, `foundations`, `milestones`, `mastery`, `seasonal`, or `fc_pro`.
+- `content_type=evolution`: EA account slots/progress, FUT.GG public definitions, or a merged result. `section` selects `my_evolutions`, `training_camp`, `rewards`, `evolutions`, or unmatched `public` entries.
 - `content_type=sbc`: EA account SBC set summaries.
-- `source=auto`: prefer EA account state; when the Web App is unavailable, public evolutions use FUT.GG.
+- `source=auto`: use EA for Season, objectives, and SBCs; merge EA account state with FUT.GG public facts for Evolutions. If one Evolution source is unavailable, return the remaining source with `complete=false` and a merge warning.
 - `source=ea`: require the authenticated Web App.
 - `source=futgg`: currently available for evolutions through the content-hashed manifest dataset.
+- `state`: filter current, available, started, paused, claimable, completed, expired, or all content where applicable. Invalid content-type combinations return an actionable error.
 - `detail=summary`: compact bounded facts.
-- `detail=detailed`: objective tasks or evolution levels, requirements and rewards.
+- `detail=detailed`: Season rewards, objective tasks, or merged Evolution levels, progress, requirements, upgrades, and lifecycle evidence.
+
+FUT.GG `all-evolutions` means every Evolution in the current manifest dataset. It is not described as historical completeness when the active and all datasets are identical.
 
 Use `sbc_query` when exact SBC requirements, persistence, solving, save or submission evidence is required.
 
