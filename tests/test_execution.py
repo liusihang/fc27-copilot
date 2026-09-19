@@ -241,6 +241,45 @@ class ExecutionServiceTest(unittest.TestCase):
             ExecutionService._normalize_action(action)
         self.assertEqual(invalid.exception.code, "INVALID_ACTION")
 
+    def test_tactics_active_false_is_an_explicit_change(self):
+        action = {
+            "action_id": "tactic-off",
+            "idempotency_key": "tactic-off",
+            "type": "save_squad_tactics",
+            "squad_id": 1,
+            "expected_squad_hash": "c" * 64,
+            "tactic_id": 6,
+            "active": False,
+        }
+        normalized = ExecutionService._normalize_action(action)
+        self.assertIs(normalized["active"], False)
+
+    def test_squad_hash_only_actions_do_not_require_club_sync_id(self):
+        action = {
+            "action_id": "active-1",
+            "idempotency_key": "active-1",
+            "type": "set_active_squad",
+            "squad_id": 1,
+            "expected_squad_hash": "d" * 64,
+        }
+        request = self.request(actions=[action])
+        request.pop("expected_sync_id")
+        service = self.service(
+            policy(allowed_action_types=["set_active_squad"]),
+            lambda value: {"ok": True},
+        )
+        result = service.execute(request)
+        self.assertEqual(result["batch"]["status"], "complete")
+        self.assertIsNone(result["batch"]["expected_sync_id"])
+
+    def test_inventory_dependent_actions_still_require_club_sync_id(self):
+        request = self.request()
+        request.pop("expected_sync_id")
+        service = self.service(policy(), lambda value: {"ok": True})
+        with self.assertRaises(FC27Error) as context:
+            service.execute(request)
+        self.assertEqual(context.exception.code, "INVALID_ACTION_BATCH")
+
     def test_squad_items_obey_owned_and_protected_checks(self):
         action = {
             "action_id": "squad-1",

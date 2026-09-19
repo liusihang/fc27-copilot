@@ -49,7 +49,7 @@ class CatalogDB:
             raise FC27Error(
                 "CATALOG_NOT_FOUND",
                 f"Catalog database does not exist: {self.path}",
-                recovery="Run scripts/import_catalog.py or FC27:catalog_refresh.",
+                recovery="Run scripts/import_catalog.py or scripts/refresh_catalog.py.",
             )
         connection = sqlite3.connect(f"file:{self.path}?mode=ro", uri=True)
         connection.row_factory = sqlite3.Row

@@ -2,7 +2,7 @@
 
 本项目把 FC27 Web App 会话桥接、FUT.GG 球员目录与价格数据、本地俱乐部镜像和 OpenClaw MCP 整合为一个本地系统。
 
-当前状态：M1–M6 已完成并通过真实账户验收。扩展安装后会直接连接本机 `fc27d`；打开并登录 FC27 Web App 后自动同步俱乐部。任务、账户进化、FUT.GG 公共进化和 SBC 列表可通过统一 MCP 查询。系统仍运行在逐批确认的 `suggest` 模式，`auto` 模式关闭。
+当前状态：M1–M6 已完成并通过真实账户验收。扩展安装后会直接连接本机 `fc27d`；打开并登录 FC27 Web App 后自动同步俱乐部。Season、任务和进化通过 `content_query` 查询；SBC 通过 `sbc_refresh` 刷新并由 `sbc_query` 读取本地缓存。系统仍运行在逐批确认的 `suggest` 模式，`auto` 模式关闭。
 
 ## 设计边界
 

@@ -8,8 +8,8 @@ from .errors import FC27Error
 
 
 FUTGG_R2_BASE = "https://r2.fut.gg/27"
-USER_AGENT = "Mozilla/5.0 (compatible; FC27-Copilot/0.5)"
-CONTENT_TYPES = ("season", "objective", "evolution", "sbc")
+USER_AGENT = "Mozilla/5.0 (compatible; FC27-Copilot/0.6)"
+CONTENT_TYPES = ("season", "objective", "evolution")
 CONTENT_SOURCES = ("auto", "ea", "futgg")
 CONTENT_STATES = (
     "current",
@@ -25,7 +25,6 @@ DEFAULT_STATES = {
     "season": "all",
     "objective": "current",
     "evolution": "current",
-    "sbc": "current",
 }
 OBJECTIVE_SECTIONS = {
     "all": None,
@@ -167,7 +166,6 @@ class ContentService:
             "season": {"current", "all", "claimable", "completed"},
             "objective": {"current", "all", "claimable", "completed", "expired"},
             "evolution": set(CONTENT_STATES),
-            "sbc": {"current", "all", "completed"},
         }[content_type]
         if state not in allowed_states:
             raise FC27Error(
@@ -179,7 +177,6 @@ class ContentService:
             "season": {"all"},
             "objective": set(OBJECTIVE_SECTIONS),
             "evolution": EVOLUTION_SECTIONS,
-            "sbc": {"all"},
         }[content_type]
         if section not in allowed_sections:
             raise FC27Error(

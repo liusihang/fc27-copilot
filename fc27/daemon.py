@@ -52,7 +52,6 @@ class FC27Daemon:
         self.squads = SquadService()
         self.futgg_content = FutggContentClient()
         self.mcp = MCPServer(self)
-        self._catalog_refresh_lock = threading.Lock()
         self._execution_lock = threading.Lock()
         self.auto_sync = AutoSyncCoordinator(self._sync_full, self._execution_lock)
 
@@ -196,8 +195,6 @@ class FC27Daemon:
                 return self._envelope("fc27d", data)
             if name == "catalog_query":
                 return self._envelope("catalog", self.catalog.query(arguments))
-            if name == "catalog_refresh":
-                return self._envelope("futgg", self._refresh_catalog())
             if name == "club_query":
                 account = self.accounts.status()
                 if account:
@@ -293,23 +290,37 @@ class FC27Daemon:
                         "sbc_query requires set_id when challenge_id is provided.",
                         recovery="Pass the set_id returned by the set or challenge-list query.",
                     )
-                if arguments.get("live", True) is False:
-                    return self._envelope(
-                        "runtime",
-                        service.query(set_id=set_id, challenge_id=challenge_id),
+                return self._envelope(
+                    "runtime",
+                    service.query(
+                        set_id=set_id,
+                        challenge_id=challenge_id,
+                        include_raw=arguments.get("include_raw", False),
+                    ),
+                )
+            if name == "sbc_refresh":
+                challenge_id = arguments.get("challenge_id")
+                set_id = arguments.get("set_id")
+                include_raw = arguments.get("include_raw", False)
+                service = self._sbc_service()
+                if challenge_id is not None and set_id is None:
+                    raise FC27Error(
+                        "INVALID_REQUEST",
+                        "sbc_refresh requires set_id when challenge_id is provided.",
+                        recovery="Pass the set_id returned by the set or challenge-list query.",
                     )
                 if challenge_id is not None:
                     raw = self._browser_tool(
                         "getSbcChallenge",
                         {"challenge_id": challenge_id, "set_id": set_id},
                     )
-                    data = service.capture_challenge(raw)
+                    data = service.capture_challenge(raw, include_raw=include_raw)
                 elif set_id is not None:
                     raw = self._browser_tool("getSbcChallenges", {"set_id": set_id})
-                    data = service.capture_challenges(raw)
+                    data = service.capture_challenges(raw, include_raw=include_raw)
                 else:
                     raw = self._browser_tool("getSbcSets", {})
-                    data = service.capture_sets(raw)
+                    data = service.capture_sets(raw, include_raw=include_raw)
                 return self._envelope("ea_webapp", data)
             if name == "price_context":
                 if not self.accounts.active:
@@ -344,7 +355,7 @@ class FC27Daemon:
                     raise FC27Error(
                         "CONTENT_SOURCE_UNAVAILABLE",
                         "FUT.GG currently exposes a stable manifest dataset for evolutions only.",
-                        recovery="Use source=ea for objective or SBC account content.",
+                        recovery="Use source=ea for Season or objective account content.",
                     )
                 if source == "futgg":
                     raw = self.futgg_content.evolutions(
@@ -358,7 +369,6 @@ class FC27Daemon:
                     "season": "getObjectives",
                     "objective": "getObjectives",
                     "evolution": "getEvolutions",
-                    "sbc": "getSbcSets",
                 }[content_type]
                 if source == "ea":
                     if not self.bridge.health()["connected"]:
@@ -432,11 +442,12 @@ class FC27Daemon:
                         "ACCOUNT_NOT_INITIALIZED",
                         "No EA Persona runtime database has been selected yet.",
                         retryable=True,
-                        recovery="Run FC27:sync_club and FC27:sbc_query before solving.",
+                        recovery="Run FC27:sync_club and FC27:sbc_refresh before solving.",
                     )
                 return self._envelope(
                     "runtime",
                     self._sbc_service().solve(
+                        arguments.get("set_id"),
                         arguments.get("challenge_id"),
                         arguments.get("objective") or {},
                         arguments.get("max_solutions", 5),
@@ -520,16 +531,6 @@ class FC27Daemon:
                 details=error,
             )
         return response.get("data")
-
-    def _refresh_catalog(self):
-        if not self._catalog_refresh_lock.acquire(blocking=False):
-            raise FC27Error("CATALOG_REFRESH_RUNNING", "A catalog refresh is already running.", retryable=True)
-        try:
-            from scripts.refresh_catalog import refresh_catalog
-
-            return refresh_catalog(self.catalog.path)
-        finally:
-            self._catalog_refresh_lock.release()
 
     def _sbc_service(self):
         if not self.accounts.active:

@@ -43,7 +43,7 @@ openclaw mcp probe FC27
 
 ## Accepted result
 
-- OpenClaw discovers 12 FC27 tools, including `content_query` and `squad_query`.
+- OpenClaw discovers 12 FC27 tools, including `content_query`, `squad_query`, `sbc_query`, and `sbc_refresh`.
 - `fc27d` survived a forced LaunchAgent restart and returned 19,676 cards afterward.
 - The existing `fc-expert` Agent called `fc27__catalog_query` successfully.
 - Query `card_ea_id=231747` returned Kylian Mbappé, overall 91, primary position ST.

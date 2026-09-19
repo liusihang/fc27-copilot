@@ -242,6 +242,9 @@ class ContentServiceTest(unittest.TestCase):
         with self.assertRaises(FC27Error) as context:
             ContentService.validate_arguments({"content_type": "packs"})
         self.assertEqual(context.exception.code, "INVALID_CONTENT_TYPE")
+        with self.assertRaises(FC27Error) as sbc_context:
+            ContentService.validate_arguments({"content_type": "sbc"})
+        self.assertEqual(sbc_context.exception.code, "INVALID_CONTENT_TYPE")
 
     def test_rejects_section_and_state_for_wrong_content_type(self):
         with self.assertRaises(FC27Error) as context:

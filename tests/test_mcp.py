@@ -6,7 +6,7 @@ from pathlib import Path
 
 from fc27.daemon import FC27Daemon
 from fc27.errors import FC27Error
-from fc27.mcp import TOOLS
+from fc27.mcp import SUPPORTED_PROTOCOL_VERSIONS, TOOLS
 from fc27.schema import CATALOG_SCHEMA
 
 
@@ -183,21 +183,28 @@ class MCPTest(unittest.TestCase):
         names = [tool["name"] for tool in response["result"]["tools"]]
         self.assertEqual(len(TOOLS), 12)
         self.assertEqual(names, [tool["name"] for tool in TOOLS])
+        self.assertIn("sbc_refresh", names)
+        self.assertNotIn("catalog_refresh", names)
 
     def test_content_query_schema_exposes_season_sections_and_states(self):
         tool = next(value for value in TOOLS if value["name"] == "content_query")
-        properties = tool["inputSchema"]["properties"]
-        self.assertIn("season", properties["content_type"]["enum"])
-        self.assertIn("fc_pro", properties["section"]["enum"])
-        self.assertIn("my_evolutions", properties["section"]["enum"])
-        self.assertIn("claimable", properties["state"]["enum"])
-        self.assertNotIn("scope", properties)
-        self.assertNotIn("include_completed", properties)
+        branches = tool["inputSchema"]["oneOf"]
+        by_type = {
+            branch["properties"]["content_type"]["const"]: branch["properties"]
+            for branch in branches
+        }
+        self.assertEqual(set(by_type), {"season", "objective", "evolution"})
+        self.assertIn("fc_pro", by_type["objective"]["section"]["enum"])
+        self.assertIn("my_evolutions", by_type["evolution"]["section"]["enum"])
+        self.assertIn("claimable", by_type["season"]["state"]["enum"])
+        self.assertNotIn("sbc", by_type)
 
     def test_squad_query_schema_and_live_result(self):
         tool = next(value for value in TOOLS if value["name"] == "squad_query")
         properties = tool["inputSchema"]["properties"]
         self.assertEqual(properties["selection"]["enum"], ["all", "active", "exact"])
+        self.assertEqual(properties["detail"]["default"], "summary")
+        self.assertFalse(properties["include_options"]["default"])
         self.daemon.bridge = IdentityBridge()
         result = self.daemon.call_tool(
             "squad_query", {"selection": "active", "detail": "detailed"}
@@ -206,22 +213,119 @@ class MCPTest(unittest.TestCase):
         self.assertEqual(result["data"]["active_squad_id"], 7)
         self.assertEqual(result["data"]["squads"][0]["formation"]["id"], 8)
         self.assertEqual(len(result["data"]["squads"][0]["squad_hash"]), 64)
+        self.assertNotIn("catalog", result["data"])
+
+        with_options = self.daemon.call_tool(
+            "squad_query",
+            {
+                "selection": "active",
+                "detail": "detailed",
+                "include_options": True,
+            },
+        )
+        self.assertEqual(with_options["data"]["catalog"]["formations"][0]["id"], 8)
 
     def test_sbc_solve_schema_exposes_exact_required_item_ids(self):
         tool = next(value for value in TOOLS if value["name"] == "sbc_solve")
         objective = tool["inputSchema"]["properties"]["objective"]
         required = objective["properties"]["required_item_ids"]
-        self.assertEqual(required["items"], {"type": "integer", "minimum": 1})
+        self.assertEqual(required["items"]["type"], "integer")
+        self.assertEqual(required["items"]["minimum"], 1)
+        self.assertIn("description", required["items"])
         self.assertEqual(required["maxItems"], 11)
         self.assertTrue(required["uniqueItems"])
         self.assertFalse(objective["additionalProperties"])
         self.assertIn("club_query", tool["description"])
-        action_items = next(
+        self.assertIn("set_id", tool["inputSchema"]["required"])
+        actions = next(
             value for value in TOOLS if value["name"] == "execute_actions"
-        )["inputSchema"]["properties"]["actions"]["items"]["properties"]["item_ids"]
+        )["inputSchema"]["properties"]["actions"]["items"]["oneOf"]
+        save_sbc = next(
+            value
+            for value in actions
+            if value["properties"]["type"]["const"] == "save_sbc_squad"
+        )
+        action_items = save_sbc["properties"]["item_ids"]
         self.assertEqual(action_items["minItems"], 1)
         self.assertEqual(action_items["maxItems"], 11)
         self.assertTrue(action_items["uniqueItems"])
+
+    def test_action_schema_is_discriminated_and_closed(self):
+        tool = next(value for value in TOOLS if value["name"] == "execute_actions")
+        actions = tool["inputSchema"]["properties"]["actions"]["items"]["oneOf"]
+        self.assertEqual(len(actions), 11)
+        by_type = {
+            value["properties"]["type"]["const"]: value for value in actions
+        }
+        self.assertEqual(
+            set(by_type["buy_now"]["required"]),
+            {
+                "action_id",
+                "idempotency_key",
+                "type",
+                "trade_id",
+                "expected_card_ea_id",
+                "max_price",
+            },
+        )
+        self.assertTrue(all(value["additionalProperties"] is False for value in actions))
+        self.assertNotIn("expected_sync_id", tool["inputSchema"]["required"])
+
+    def test_tool_contracts_have_output_schemas_and_parameter_descriptions(self):
+        def assert_described(schema):
+            for value in schema.get("properties", {}).values():
+                self.assertIn("description", value)
+                assert_described(value)
+            for branch in schema.get("oneOf", []):
+                assert_described(branch)
+
+        for tool in TOOLS:
+            self.assertIn("outputSchema", tool)
+            assert_described(tool["inputSchema"])
+
+    def test_side_effect_annotations_match_local_persistence(self):
+        by_name = {tool["name"]: tool for tool in TOOLS}
+        self.assertFalse(by_name["sync_club"]["annotations"]["readOnlyHint"])
+        self.assertFalse(by_name["market_search"]["annotations"]["readOnlyHint"])
+        self.assertFalse(by_name["sbc_refresh"]["annotations"]["readOnlyHint"])
+        self.assertFalse(by_name["sbc_solve"]["annotations"]["readOnlyHint"])
+        self.assertTrue(by_name["sbc_query"]["annotations"]["readOnlyHint"])
+
+    def test_initialize_negotiates_only_supported_protocol_versions(self):
+        accepted = self.daemon.mcp.handle(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {"protocolVersion": "2025-06-18"},
+            }
+        )
+        self.assertEqual(accepted["result"]["protocolVersion"], "2025-06-18")
+        future = self.daemon.mcp.handle(
+            {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "initialize",
+                "params": {"protocolVersion": "2099-01-01"},
+            }
+        )
+        self.assertEqual(
+            future["result"]["protocolVersion"], SUPPORTED_PROTOCOL_VERSIONS[0]
+        )
+        self.assertIn("card_ea_id", future["result"]["instructions"])
+
+    def test_sbc_refresh_persists_and_query_reads_cache_without_raw_by_default(self):
+        self.daemon.bridge = IdentityBridge()
+        self.daemon.call_tool("sync_club", {})
+        refreshed = self.daemon.call_tool("sbc_refresh", {})
+        self.assertTrue(refreshed["ok"])
+        self.assertEqual(refreshed["data"]["sets"][0]["set_id"], "4")
+        self.assertNotIn("raw", refreshed["data"]["sets"][0])
+
+        cached = self.daemon.call_tool("sbc_query", {})
+        self.assertTrue(cached["ok"])
+        self.assertEqual(cached["meta"]["source"], "runtime")
+        self.assertEqual(cached["data"]["sets"][0]["set_id"], "4")
 
     def test_catalog_query_returns_uniform_envelope(self):
         response = self.daemon.mcp.handle({"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "catalog_query", "arguments": {"card_ea_ids": [200]}}})

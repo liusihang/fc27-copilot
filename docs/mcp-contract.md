@@ -4,6 +4,10 @@ Date: 2026-09-19
 
 Server name: `FC27`
 
+Server version: `0.6.0`
+
+The stdio adapter implements the initialize-based MCP lifecycle and negotiates only `2025-11-25`, `2025-06-18`, or `2024-11-05`. An unsupported requested version receives the newest version implemented by this server.
+
 OpenClaw should refer to tools with fully qualified names such as `FC27:catalog_query`.
 
 ## Response envelope
@@ -53,7 +57,7 @@ Failed calls return:
 
 ### `FC27:status`
 
-Returns daemon/database health, browser bridge state, public EA session status, active Persona, coins, catalog metadata, latest complete sync, policy mode, and active rate-limit/backoff state. It never returns raw session headers.
+Returns daemon/database health, browser bridge state, public EA session status, active Persona, coins, catalog metadata, latest complete sync, policy mode, and active rate-limit/backoff state. Use it when readiness is unknown, before the first account-dependent operation in a workflow, or after a readiness-related error. Reuse a recent successful result. It never returns raw session headers.
 
 Status also returns automatic synchronization state: pending/running flags, triggering reason, bounded retry attempt, last event, last successful synchronization and last error.
 
@@ -92,19 +96,21 @@ Reads current Ultimate Team squads directly through the authenticated Web App.
 - `selection=active`: current playing squad.
 - `selection=exact`: one `squad_id`.
 - `detail=summary`: identity, formation, rating, chemistry and active state.
-- `detail=detailed`: ordered starting, substitute, reserve and manager slots; exact owned `item_id` values; five tactics profiles; current Web App formations; style enums; and position-compatible role/variation options.
+- `detail=summary`: the default; identity, formation, rating, chemistry and active state.
+- `detail=detailed`: ordered starting, substitute, reserve and manager slots; exact owned `item_id` values; five tactics profiles; and `squad_hash`.
+- `include_options=true`: with detailed mode, additionally returns current Web App formations, style enums, and position-compatible role/variation options.
 
 Every detailed squad includes a canonical `squad_hash` over active state, formation, ordered slots and tactics. Summary results omit the hash because they do not contain the complete hashed state. Squad-changing actions must use the detailed hash and fail with `STALE_SQUAD_STATE` if the live squad changed.
 
 ### `FC27:sync_club`
 
-Runs a read-only full or targeted synchronization through the authenticated browser bridge. Full mode records per-area completeness and commits only after all required areas finish.
+Runs a full synchronization through the authenticated browser bridge and updates the local runtime database. It does not change the EA account. Full mode records per-area completeness and commits only after all required areas finish.
 
 Default areas: `coins`, `club`, `storage`, `unassigned`, and `tradepile`.
 
 ### `FC27:market_search`
 
-Searches current EA listings for one explicit `card_ea_id` and bounded price range. It returns concrete `trade_id` values and aggregate sample statistics. It does not choose a purchase.
+Searches current EA listings for one explicit `card_ea_id` and bounded price range. It returns concrete `trade_id` values and aggregate sample statistics, and records the aggregate scan in the local runtime database. It does not choose a purchase.
 
 ### `FC27:price_context`
 
@@ -112,13 +118,12 @@ Returns current and historical FUT.GG prices, EA scan history, holdings, listed 
 
 ### `FC27:content_query`
 
-Discovers FC Season levels, objective groups, Evolution slots, or SBC sets through one bounded list interface.
+Discovers FC Season levels, objective groups, or Evolution slots through one bounded list interface.
 
 - `content_type=season`: compact standard and Premium FC Season level rewards, required SP, remaining SP, unlock, claimable, and claimed state.
 - `content_type=objective`: EA account categories, groups, task progress and rewards. `section` selects `fc_objectives`, `foundations`, `milestones`, `mastery`, `seasonal`, or `fc_pro`.
 - `content_type=evolution`: EA account slots/progress, FUT.GG public definitions, or a merged result. `section` selects `my_evolutions`, `training_camp`, `rewards`, `evolutions`, or unmatched `public` entries.
-- `content_type=sbc`: EA account SBC set summaries.
-- `source=auto`: use EA for Season, objectives, and SBCs; merge EA account state with FUT.GG public facts for Evolutions. If one Evolution source is unavailable, return the remaining source with `complete=false` and a merge warning.
+- `source=auto`: use EA for Season and objectives; merge EA account state with FUT.GG public facts for Evolutions. If one Evolution source is unavailable, return the remaining source with `complete=false` and a merge warning.
 - `source=ea`: require the authenticated Web App.
 - `source=futgg`: currently available for evolutions through the content-hashed manifest dataset.
 - `state`: filter current, available, started, paused, claimable, completed, expired, or all content where applicable. Invalid content-type combinations return an actionable error.
@@ -127,11 +132,15 @@ Discovers FC Season levels, objective groups, Evolution slots, or SBC sets throu
 
 FUT.GG `all-evolutions` means every Evolution in the current manifest dataset. It is not described as historical completeness when the active and all datasets are identical.
 
-Use `sbc_query` when exact SBC requirements, persistence, solving, save or submission evidence is required.
+Use `sbc_refresh` and `sbc_query` for all SBC discovery and requirements.
 
 ### `FC27:sbc_query`
 
-Refreshes and persists live SBC sets/challenges or reads the local cache. It returns raw evidence, normalized constraints, formation slots, rewards, status, expiry, repeatability, observation time, and explicit unsupported-constraint reports.
+Reads persisted SBC sets/challenges from the local runtime database. It returns normalized constraints, formation slots, rewards, status, expiry, repeatability, observation time, and explicit unsupported-constraint reports. It does not contact EA or modify local state. Raw evidence is omitted unless `include_raw=true`.
+
+### `FC27:sbc_refresh`
+
+Reads current SBC state from the authenticated Web App, normalizes and persists it, then returns the result. Omit IDs to refresh sets, pass `set_id` to refresh that set's challenges, or pass both `set_id` and `challenge_id` for exact requirements. Raw evidence is omitted unless `include_raw=true`.
 
 ### `FC27:sbc_solve`
 
@@ -141,6 +150,7 @@ The Agent can require concrete owned items:
 
 ```json
 {
+  "set_id": "4",
   "challenge_id": "16",
   "objective": {
     "required_item_ids": [800013],
@@ -171,10 +181,13 @@ Executes an ordered list of exact operations. The Agent must provide targets and
 Required batch controls:
 
 - `batch_id`;
-- `expected_sync_id`;
 - `stop_on_error`;
 - one unique `action_id` and `idempotency_key` per action;
 - `confirmed=true` when policy mode requires confirmation.
+
+`expected_sync_id` is required for market, inventory, SBC, and squad-slot actions. `set_active_squad`, `save_squad_tactics`, and a formation-only `save_squad` use `expected_squad_hash` without an unrelated club synchronization dependency.
+
+`confirmed=true` means the user explicitly authorized this exact batch. The Agent must not infer confirmation from expected value or benefit.
 
 Supported action types include `buy_now`, `place_bid`, `list_item`, `move_item`, `relist_all`, `clear_sold`, `save_sbc_squad`, `submit_sbc`, `set_active_squad`, `save_squad`, and `save_squad_tactics`.
 
@@ -186,9 +199,7 @@ Squad action fields follow the current Web App contract:
 
 These actions apply one coherent Web App save and then independently reload the target squad. Timeout results use `SQUAD_WRITE_OUTCOME_UNKNOWN`; callers read `squad_query` and never retry automatically.
 
-### `FC27:catalog_refresh`
-
-Checks the FUT.GG manifest and rebuilds the catalog when requested or due. Replacement occurs only after complete validation. The tool returns old/new snapshot identity and validation counts.
+Catalog rebuild is an operator maintenance action and is not advertised to ordinary Agents. Run `scripts/refresh_catalog.py`; replacement occurs only after complete validation.
 
 ## Operator-only daemon RPCs
 
@@ -198,7 +209,7 @@ Save and submit reconciliation are narrow localhost daemon RPCs, not additional 
 
 | Code | Meaning | Recovery |
 | --- | --- | --- |
-| `CATALOG_NOT_FOUND` | Local catalog has not been built. | Run `FC27:catalog_refresh` or the import script. |
+| `CATALOG_NOT_FOUND` | Local catalog has not been built. | Run `scripts/import_catalog.py` or `scripts/refresh_catalog.py`. |
 | `CATALOG_INVALID` | Integrity, mapping, or count validation failed. | Keep the active catalog and inspect validation details. |
 | `DAEMON_UNAVAILABLE` | MCP adapter cannot reach fc27d. | Start fc27d and retry. |
 | `BRIDGE_NOT_CONNECTED` | The extension is not polling the local daemon. | Open the FC27 Web App with the extension enabled. |
@@ -235,4 +246,6 @@ Save and submit reconciliation are narrow localhost daemon RPCs, not additional 
 
 ## Tool-selection rule
 
-Catalog facts use `catalog_query`; owned-item state uses `club_query`; playing squad, formation and tactics state uses `squad_query`; current listings use `market_search`; combined historical/economic context uses `price_context`; current objectives/evolutions/SBC discovery uses `content_query`; exact SBC constraints and workflows use `sbc_query`.
+Catalog facts use `catalog_query`; owned-item state uses `club_query`; playing squad, formation and tactics state uses `squad_query`; current listings use `market_search`; combined historical/economic context uses `price_context`; Seasons/objectives/Evolutions use `content_query`; current SBC capture uses `sbc_refresh`; persisted SBC reads use `sbc_query`.
+
+Every advertised tool includes parameter descriptions and a common `outputSchema` for the success/error envelope. `execute_actions.actions` is a closed discriminated union: each action type exposes only its valid fields and requires its own exact parameters.

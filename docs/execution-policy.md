@@ -32,10 +32,11 @@ Changing `policy.json` is a separate user-authorized configuration change. Imple
 Every `FC27:execute_actions` request contains:
 
 - one non-empty `batch_id`;
-- the latest complete `expected_sync_id`;
 - an ordered non-empty `actions` array;
 - one unique `action_id` and `idempotency_key` per action;
 - `confirmed=true` when mode is `suggest`.
+
+The latest complete `expected_sync_id` is required when a batch depends on market, inventory, SBC, or squad-slot state. Active-squad selection, tactics-only changes, and formation-only squad saves use `expected_squad_hash` without requiring a club synchronization ID.
 
 The Agent supplies exact targets and prices. The execution tool never selects a card, owned item, listing, price, SBC solution, or destination.
 
@@ -45,7 +46,7 @@ The Agent supplies exact targets and prices. The execution tool never selects a 
 2. Return an existing result for an identical `batch_id` replay.
 3. Load and validate the complete policy file.
 4. Enforce mode and suggest-mode confirmation.
-5. Compare `expected_sync_id` with the latest complete club state.
+5. For actions that depend on owned-item state, compare `expected_sync_id` with the latest complete club state.
 6. Enforce action count, allowed types, protected items, single/batch/daily spend, minimum coin reserve, same-card ownership, and tradepile usage.
 7. Reject action IDs or idempotency keys already owned by another batch.
 8. Insert batch and action audit rows.

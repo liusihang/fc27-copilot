@@ -163,6 +163,7 @@ class SbcServiceTest(unittest.TestCase):
     def test_solver_persists_multiple_exact_validated_solutions(self):
         self.service.capture_challenges(challenge_payload())
         result = self.service.solve(
+            "4",
             "16",
             {"prefer_untradeable": True, "max_tradeable_value": 0},
             max_solutions=2,
@@ -176,9 +177,16 @@ class SbcServiceTest(unittest.TestCase):
             persisted = self.runtime.get_sbc_solution(solution["solution_id"])
             self.assertEqual(persisted["item_ids"], solution["item_ids"])
 
+    def test_solver_requires_matching_set_and_challenge_identity(self):
+        self.service.capture_challenges(challenge_payload())
+        with self.assertRaises(FC27Error) as context:
+            self.service.solve("999", "16", {}, max_solutions=1)
+        self.assertEqual(context.exception.code, "SBC_CHALLENGE_NOT_FOUND")
+
     def test_solver_includes_every_agent_required_item(self):
         self.service.capture_challenges(challenge_payload())
         result = self.service.solve(
+            "4",
             "16",
             {
                 "required_item_ids": [12, 13],
@@ -207,7 +215,7 @@ class SbcServiceTest(unittest.TestCase):
                 )
             connection.commit()
         result = self.service.solve(
-            "16", {"prefer_untradeable": False}, max_solutions=1
+            "4", "16", {"prefer_untradeable": False}, max_solutions=1
         )
         self.assertEqual(result["solutions"][0]["item_ids"], list(range(1, 12)))
         self.assertEqual(result["solutions"][0]["tradeable_value"], 6600)
@@ -216,7 +224,7 @@ class SbcServiceTest(unittest.TestCase):
         self.service.capture_challenges(
             challenge_payload([bronze_requirement(), minimum_rating_requirement(62)])
         )
-        result = self.service.solve("16", {}, max_solutions=2)
+        result = self.service.solve("4", "16", {}, max_solutions=2)
         for solution in result["solutions"]:
             self.assertGreaterEqual(
                 solution["validation"]["metrics"]["team_rating"], 62
@@ -234,7 +242,10 @@ class SbcServiceTest(unittest.TestCase):
         self.assertEqual(challenge["slots"], ["GK"])
         self.assertEqual(challenge["constraints"][0]["type"], "overall_count")
         result = self.service.solve(
-            challenge["challenge_id"], {"required_item_ids": [12]}, max_solutions=1
+            "1",
+            challenge["challenge_id"],
+            {"required_item_ids": [12]},
+            max_solutions=1,
         )
         self.assertEqual(result["solutions"][0]["item_ids"], [12])
 
@@ -339,7 +350,7 @@ class SbcServiceTest(unittest.TestCase):
         )
         captured = self.service.capture_challenges(payload)
         result = self.service.solve(
-            captured["challenges"][0]["challenge_id"], {}, max_solutions=1
+            "1", captured["challenges"][0]["challenge_id"], {}, max_solutions=1
         )
         solution = result["solutions"][0]
         self.assertEqual(
@@ -354,6 +365,7 @@ class SbcServiceTest(unittest.TestCase):
         self.service.capture_challenges(challenge_payload())
         with self.assertRaises(FC27Error) as context:
             self.service.solve(
+                "4",
                 "16",
                 {"required_item_ids": [12], "exclude_item_ids": [12]},
                 max_solutions=1,
@@ -365,7 +377,7 @@ class SbcServiceTest(unittest.TestCase):
         self.service.capture_challenges(challenge_payload())
         with self.assertRaises(FC27Error) as context:
             self.service.solve(
-                "16", {"required_item_ids": [999999]}, max_solutions=1
+                "4", "16", {"required_item_ids": [999999]}, max_solutions=1
             )
         self.assertEqual(context.exception.code, "SBC_REQUIRED_ITEM_MISSING")
         self.assertEqual(context.exception.details["item_ids"], [999999])
@@ -378,7 +390,9 @@ class SbcServiceTest(unittest.TestCase):
             )
             connection.commit()
         with self.assertRaises(FC27Error) as context:
-            self.service.solve("16", {"required_item_ids": [12]}, max_solutions=1)
+            self.service.solve(
+                "4", "16", {"required_item_ids": [12]}, max_solutions=1
+            )
         self.assertEqual(context.exception.code, "SBC_REQUIRED_ITEM_INELIGIBLE")
         self.assertEqual(context.exception.details["items"][0]["reason"], "protected")
 
@@ -386,7 +400,7 @@ class SbcServiceTest(unittest.TestCase):
         self.service.capture_challenges(challenge_payload())
         with self.assertRaises(FC27Error) as context:
             self.service.solve(
-                "16", {"required_item_ids": [12, 12]}, max_solutions=1
+                "4", "16", {"required_item_ids": [12, 12]}, max_solutions=1
             )
         self.assertEqual(context.exception.code, "SBC_OBJECTIVE_INVALID")
 
@@ -398,7 +412,7 @@ class SbcServiceTest(unittest.TestCase):
         }
         self.service.capture_challenges(challenge_payload([unknown]))
         with self.assertRaises(FC27Error) as context:
-            self.service.solve("16", {}, max_solutions=1)
+            self.service.solve("4", "16", {}, max_solutions=1)
         self.assertEqual(context.exception.code, "SBC_SCHEMA_UNSUPPORTED")
         self.assertEqual(
             context.exception.details["unsupported_constraints"][0]["reason"],

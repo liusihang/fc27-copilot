@@ -16,7 +16,8 @@ class SquadService:
     def validate_arguments(arguments):
         arguments = arguments or {}
         selection = str(arguments.get("selection") or "active").lower()
-        detail = str(arguments.get("detail") or "detailed").lower()
+        detail = str(arguments.get("detail") or "summary").lower()
+        include_options = arguments.get("include_options", False)
         if selection not in SQUAD_SELECTIONS:
             raise FC27Error(
                 "INVALID_SQUAD_SELECTION",
@@ -25,6 +26,16 @@ class SquadService:
         if detail not in ("summary", "detailed"):
             raise FC27Error(
                 "INVALID_SQUAD_DETAIL", "detail must be summary or detailed."
+            )
+        if not isinstance(include_options, bool):
+            raise FC27Error(
+                "INVALID_SQUAD_OPTIONS", "include_options must be a boolean."
+            )
+        if include_options and detail != "detailed":
+            raise FC27Error(
+                "INVALID_SQUAD_OPTIONS",
+                "include_options=true requires detail=detailed.",
+                recovery="Use detail=detailed when formation, role, or variation IDs are needed.",
             )
         squad_id = arguments.get("squad_id")
         if selection == "exact" and squad_id is None:
@@ -40,7 +51,12 @@ class SquadService:
                 raise FC27Error(
                     "INVALID_SQUAD_ID", "squad_id must be an integer."
                 ) from error
-        return {"selection": selection, "detail": detail, "squad_id": squad_id}
+        return {
+            "selection": selection,
+            "detail": detail,
+            "include_options": include_options,
+            "squad_id": squad_id,
+        }
 
     @classmethod
     def normalize(cls, raw, options):
@@ -71,19 +87,21 @@ class SquadService:
                 recovery="Refresh the Web App squad list and retry squad_query.",
             )
         squads.sort(key=lambda value: (not value.get("active"), value.get("name") or "", value.get("squad_id") or 0))
-        return {
+        result = {
             "selection": options["selection"],
             "detail": options["detail"],
             "active_squad_id": active_squad_id,
             "total_count": len(squads),
             "squads": squads,
-            "catalog": raw.get("catalog") if options["detail"] == "detailed" else None,
             "source_meta": {
                 "status": raw.get("status"),
                 "max_squads": raw.get("max_squads"),
                 "list_full": bool(raw.get("list_full")),
             },
         }
+        if options["detail"] == "detailed" and options.get("include_options", False):
+            result["catalog"] = raw.get("catalog")
+        return result
 
     @classmethod
     def hash_squad(cls, squad):

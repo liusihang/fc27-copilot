@@ -79,7 +79,7 @@ class ExecutionService:
                 self._start_action(action["action_id"])
                 dispatch_action = {
                     **action,
-                    "_expected_sync_id": request["expected_sync_id"],
+                    "_expected_sync_id": request.get("expected_sync_id"),
                 }
                 result = self.dispatcher(dispatch_action)
                 self._finish_action(action["action_id"], "complete", result=result)
@@ -100,13 +100,23 @@ class ExecutionService:
 
     def _validate_batch(self, request, actions, policy):
         expected_sync_id = request.get("expected_sync_id")
-        if isinstance(expected_sync_id, bool) or not isinstance(expected_sync_id, int):
+        sync_required = self._requires_sync(actions)
+        if sync_required and (
+            isinstance(expected_sync_id, bool) or not isinstance(expected_sync_id, int)
+        ):
+            raise FC27Error(
+                "INVALID_ACTION_BATCH",
+                "expected_sync_id is required for inventory, market, SBC, and squad slot actions.",
+            )
+        if expected_sync_id is not None and (
+            isinstance(expected_sync_id, bool) or not isinstance(expected_sync_id, int)
+        ):
             raise FC27Error(
                 "INVALID_ACTION_BATCH", "expected_sync_id must be an integer."
             )
         state = self.runtime.account_summary()
         current_sync_id = state.get("last_full_sync_id") if state else None
-        if expected_sync_id != current_sync_id:
+        if expected_sync_id is not None and expected_sync_id != current_sync_id:
             raise FC27Error(
                 "STALE_CLUB_STATE",
                 f"Expected sync {expected_sync_id}, current complete sync is {current_sync_id}.",
@@ -336,7 +346,10 @@ class ExecutionService:
                 f"Daily spend would become {daily_spend + batch_spend}, above maximum_daily_spend."
             )
         coin_balance = state.get("coin_balance") if state else None
-        if coin_balance is None or coin_balance - batch_spend < policy["minimum_coin_reserve"]:
+        if batch_spend and (
+            coin_balance is None
+            or coin_balance - batch_spend < policy["minimum_coin_reserve"]
+        ):
             self._policy_denied("Batch would reduce coins below minimum_coin_reserve.")
         for card_ea_id, addition in planned_card_counts.items():
             resulting = holding_counts.get(card_ea_id, 0) + addition
@@ -481,6 +494,20 @@ class ExecutionService:
                 raise FC27Error("INVALID_ACTION", "slot_updates cannot assign one item to multiple slots.")
             normalized["slot_updates"] = normalized_updates
         if action_type == "save_squad_tactics":
+            mutable = (
+                "name",
+                "formation_id",
+                "defensive_style",
+                "defensive_line_height",
+                "build_up_play_style",
+                "active",
+                "instructions",
+            )
+            has_change = "active" in action or any(
+                action.get(key) not in (None, [])
+                for key in mutable
+                if key != "active"
+            )
             try:
                 normalized["tactic_id"] = int(normalized["tactic_id"])
             except (KeyError, TypeError, ValueError) as error:
@@ -500,6 +527,8 @@ class ExecutionService:
                     raise FC27Error("INVALID_ACTION", f"{key} must be between {minimum} and {maximum}.")
             if normalized.get("formation_id") is not None:
                 normalized["formation_id"] = int(normalized["formation_id"])
+            if "active" in normalized and not isinstance(normalized["active"], bool):
+                raise FC27Error("INVALID_ACTION", "active must be a boolean.")
             instructions = normalized.get("instructions") or []
             normalized_instructions = []
             for value in instructions:
@@ -516,10 +545,18 @@ class ExecutionService:
             if len({value["slot_index"] for value in normalized_instructions}) != len(normalized_instructions):
                 raise FC27Error("INVALID_ACTION", "Tactic instructions cannot repeat a slot_index.")
             normalized["instructions"] = normalized_instructions
-            mutable = ("name", "formation_id", *numeric_ranges, "active", "instructions")
-            if not any(normalized.get(key) not in (None, [], False) for key in mutable):
+            if not has_change:
                 raise FC27Error("INVALID_ACTION", "save_squad_tactics requires at least one change.")
         return normalized
+
+    @staticmethod
+    def _requires_sync(actions):
+        for action in actions:
+            if action["type"] not in SQUAD_TYPES:
+                return True
+            if action["type"] == "save_squad" and action.get("slot_updates"):
+                return True
+        return False
 
     def _insert_audit(self, request, actions, execution_mode):
         created_at = utc_now()
@@ -532,7 +569,7 @@ class ExecutionService:
                 (
                     request["batch_id"],
                     execution_mode,
-                    request["expected_sync_id"],
+                    request.get("expected_sync_id"),
                     created_at,
                 ),
             )

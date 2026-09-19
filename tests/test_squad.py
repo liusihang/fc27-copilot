@@ -43,7 +43,9 @@ class SquadServiceTest(unittest.TestCase):
         }
 
     def test_active_squad_is_normalized_and_hashed(self):
-        options = SquadService.validate_arguments({})
+        options = SquadService.validate_arguments(
+            {"detail": "detailed", "include_options": True}
+        )
         result = SquadService.normalize(self.fixture(), options)
         self.assertEqual(result["total_count"], 1)
         self.assertEqual(result["squads"][0]["squad_id"], 7)

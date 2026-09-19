@@ -282,7 +282,12 @@ class ActionDispatcher:
         )
         data = SquadService.normalize(
             raw,
-            {"selection": "exact", "detail": "detailed", "squad_id": int(squad_id)},
+            {
+                "selection": "exact",
+                "detail": "detailed",
+                "include_options": False,
+                "squad_id": int(squad_id),
+            },
         )
         return {"active_squad_id": data["active_squad_id"], "squad": data["squads"][0]}
 

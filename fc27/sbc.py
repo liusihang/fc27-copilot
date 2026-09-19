@@ -40,13 +40,16 @@ class SbcService:
         self.runtime = runtime
         self.catalog = catalog
 
-    def capture_sets(self, payload):
+    def capture_sets(self, payload, include_raw=True):
         observed_at = utc_now()
         sets = [self._normalize_set(value, observed_at) for value in payload.get("sets") or []]
         self.runtime.upsert_sbc_sets(sets)
-        return {"count": len(sets), "sets": sets, "observed_at": observed_at}
+        return self._present(
+            {"count": len(sets), "sets": sets, "observed_at": observed_at},
+            include_raw,
+        )
 
-    def capture_challenges(self, payload):
+    def capture_challenges(self, payload, include_raw=True):
         observed_at = utc_now()
         normalized_set = self._normalize_set(payload["set"], observed_at)
         challenges = [
@@ -55,14 +58,17 @@ class SbcService:
         ]
         self.runtime.upsert_sbc_sets([normalized_set])
         self.runtime.upsert_sbc_challenges(challenges)
-        return {
-            "set": normalized_set,
-            "count": len(challenges),
-            "challenges": challenges,
-            "observed_at": observed_at,
-        }
+        return self._present(
+            {
+                "set": normalized_set,
+                "count": len(challenges),
+                "challenges": challenges,
+                "observed_at": observed_at,
+            },
+            include_raw,
+        )
 
-    def capture_challenge(self, payload):
+    def capture_challenge(self, payload, include_raw=True):
         observed_at = utc_now()
         normalized_set = self._normalize_set(payload["set"], observed_at)
         challenge = self._normalize_challenge(
@@ -70,19 +76,27 @@ class SbcService:
         )
         self.runtime.upsert_sbc_sets([normalized_set])
         self.runtime.upsert_sbc_challenges([challenge])
-        return {"set": normalized_set, "challenge": challenge}
+        return self._present(
+            {"set": normalized_set, "challenge": challenge}, include_raw
+        )
 
-    def query(self, *, set_id=None, challenge_id=None):
-        return self.runtime.query_sbcs(set_id=set_id, challenge_id=challenge_id)
+    def query(self, *, set_id=None, challenge_id=None, include_raw=False):
+        result = self.runtime.query_sbcs(set_id=set_id, challenge_id=challenge_id)
+        if challenge_id is not None:
+            challenge = result.get("challenge")
+            if challenge is not None and str(challenge.get("set_id")) != str(set_id):
+                challenge = None
+            result = {"challenge": challenge}
+        return self._present(result, include_raw)
 
-    def solve(self, challenge_id, objective=None, max_solutions=5):
+    def solve(self, set_id, challenge_id, objective=None, max_solutions=5):
         objective = self._normalize_objective(objective)
         challenge = self.runtime.get_sbc_challenge(challenge_id)
-        if challenge is None:
+        if challenge is None or str(challenge.get("set_id")) != str(set_id):
             raise FC27Error(
                 "SBC_CHALLENGE_NOT_FOUND",
-                f"SBC challenge {challenge_id} is not cached.",
-                recovery="Call FC27:sbc_query for the challenge, then retry.",
+                f"SBC challenge {challenge_id} in set {set_id} is not cached.",
+                recovery="Call FC27:sbc_refresh with set_id and challenge_id, then retry.",
             )
         unsupported = challenge["unsupported_constraints"]
         if unsupported:
@@ -161,6 +175,20 @@ class SbcService:
             "solution_count": len(solutions),
             "solutions": solutions,
         }
+
+    @classmethod
+    def _present(cls, value, include_raw):
+        if include_raw:
+            return value
+        if isinstance(value, dict):
+            return {
+                key: cls._present(item, include_raw)
+                for key, item in value.items()
+                if key != "raw"
+            }
+        if isinstance(value, list):
+            return [cls._present(item, include_raw) for item in value]
+        return value
 
     def validate_solution(self, solution_id, expected_sync_id=None):
         solution = self.runtime.get_sbc_solution(solution_id)
