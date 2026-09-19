@@ -7,8 +7,10 @@ Verified locally on 2026-09-19 with OpenClaw `2026.9.4 (3a9d69d)`.
 Install or refresh the macOS LaunchAgent:
 
 ```bash
-python3 scripts/install_macos_service.py --proxy http://127.0.0.1:7897
+.venv/bin/python scripts/install_macos_service.py --proxy http://127.0.0.1:7897
 ```
+
+Running the installer through `.venv/bin/python` records the project environment in the LaunchAgent so the daemon can load the pinned OR-Tools dependency.
 
 Installed service:
 

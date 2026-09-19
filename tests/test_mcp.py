@@ -133,6 +133,22 @@ class MCPTest(unittest.TestCase):
         self.assertEqual(len(TOOLS), 11)
         self.assertEqual(names, [tool["name"] for tool in TOOLS])
 
+    def test_sbc_solve_schema_exposes_exact_required_item_ids(self):
+        tool = next(value for value in TOOLS if value["name"] == "sbc_solve")
+        objective = tool["inputSchema"]["properties"]["objective"]
+        required = objective["properties"]["required_item_ids"]
+        self.assertEqual(required["items"], {"type": "integer", "minimum": 1})
+        self.assertEqual(required["maxItems"], 11)
+        self.assertTrue(required["uniqueItems"])
+        self.assertFalse(objective["additionalProperties"])
+        self.assertIn("club_query", tool["description"])
+        action_items = next(
+            value for value in TOOLS if value["name"] == "execute_actions"
+        )["inputSchema"]["properties"]["actions"]["items"]["properties"]["item_ids"]
+        self.assertEqual(action_items["minItems"], 1)
+        self.assertEqual(action_items["maxItems"], 11)
+        self.assertTrue(action_items["uniqueItems"])
+
     def test_catalog_query_returns_uniform_envelope(self):
         response = self.daemon.mcp.handle({"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "catalog_query", "arguments": {"card_ea_ids": [200]}}})
         result = response["result"]["structuredContent"]

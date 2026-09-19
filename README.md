@@ -32,6 +32,9 @@
 - [SBC 契约](docs/sbc-contract.md)
 - [零配置与内容查询验收](docs/zero-config-content-acceptance-2026-09-19.md)
 - [SBC 只读与本地求解验收](docs/sbc-read-only-acceptance-2026-09-18.md)
+- [开源 SBC 求解器调研](docs/open-source-sbc-solvers-2026-09-19.md)
+- [FC26 十个 SBC 样本矩阵](docs/fc26-sbc-sample-matrix-2026-09-19.md)
+- [可变人数 SBC 验收](docs/sbc-variable-size-acceptance-2026-09-19.md)
 - [来源清单](docs/source-artifacts.md)
 - [交接记录](handoff.md)
 
@@ -41,10 +44,25 @@ GitHub Milestone 对应六个实施阶段。每项实现、验证和真实账户
 
 ## 启动本地守护进程
 
-先按 [数据目录说明](data/README.md) 构建 `data/catalog.sqlite`，然后运行：
+先创建项目私有 Python 环境并安装固定依赖：
 
 ```bash
-python3 fc27d.py
+python3 -m venv .venv
+.venv/bin/python -m pip install -r requirements.txt
+```
+
+网络较慢时可使用国内镜像：
+
+```bash
+.venv/bin/python -m pip install \
+  --index-url https://mirrors.aliyun.com/pypi/simple \
+  -r requirements.txt
+```
+
+然后按 [数据目录说明](data/README.md) 构建 `data/catalog.sqlite` 并运行：
+
+```bash
+.venv/bin/python fc27d.py
 ```
 
 默认监听 `http://127.0.0.1:3926`。可用端点：

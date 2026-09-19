@@ -654,6 +654,9 @@ class RuntimeDB:
             solution = state["solution"]
             params = state["params"]
             expected_item_ids = [int(value) for value in params["item_ids"]]
+            saved_slot_indices = [
+                int(value) for value in response.get("saved_slot_indices") or []
+            ]
             if saved_item_ids != expected_item_ids:
                 connection.rollback()
                 raise FC27Error(
@@ -675,23 +678,28 @@ class RuntimeDB:
                     "SBC_SAVE_READBACK_FAILED",
                     "Fresh EA SBC verification returned a different set or challenge.",
                 )
-            solution_item_ids = [
-                int(row["item_id"])
-                for row in connection.execute(
-                    """SELECT item_id FROM sbc_solution_items
-                       WHERE solution_id = ? ORDER BY slot_index""",
-                    (params["solution_id"],),
-                )
+            solution_items = connection.execute(
+                """SELECT slot_index, item_id FROM sbc_solution_items
+                   WHERE solution_id = ? ORDER BY slot_index""",
+                (params["solution_id"],),
+            ).fetchall()
+            solution_item_ids = [int(row["item_id"]) for row in solution_items]
+            solution_slot_indices = [
+                int(row["slot_index"]) for row in solution_items
             ]
-            if solution_item_ids != expected_item_ids:
+            if (
+                solution_item_ids != expected_item_ids
+                or saved_slot_indices != solution_slot_indices
+            ):
                 connection.rollback()
                 raise FC27Error(
                     "SBC_SAVE_READBACK_FAILED",
-                    "The persisted SBC solution no longer matches the completed save action.",
+                    "The persisted SBC solution no longer matches the completed save action or fillable slots.",
                 )
             evidence = {
                 "saved_at_sync_id": int(batch["expected_sync_id"]),
                 "saved_item_ids": saved_item_ids,
+                "saved_slot_indices": saved_slot_indices,
                 "ea_eligible": True,
                 "verified": True,
                 "source": "ea_webapp_fresh",
@@ -743,6 +751,9 @@ class RuntimeDB:
             solution = state["solution"]
             params = state["params"]
             expected_item_ids = [int(value) for value in params["item_ids"]]
+            saved_slot_indices = [
+                int(value) for value in response.get("saved_slot_indices") or []
+            ]
             if saved_item_ids != expected_item_ids:
                 connection.rollback()
                 raise FC27Error(
@@ -764,23 +775,28 @@ class RuntimeDB:
                     "SBC_SAVE_READBACK_FAILED",
                     "Fresh EA SBC readback returned a different set or challenge.",
                 )
-            solution_item_ids = [
-                int(row["item_id"])
-                for row in connection.execute(
-                    """SELECT item_id FROM sbc_solution_items
-                       WHERE solution_id = ? ORDER BY slot_index""",
-                    (params["solution_id"],),
-                )
+            solution_items = connection.execute(
+                """SELECT slot_index, item_id FROM sbc_solution_items
+                   WHERE solution_id = ? ORDER BY slot_index""",
+                (params["solution_id"],),
+            ).fetchall()
+            solution_item_ids = [int(row["item_id"]) for row in solution_items]
+            solution_slot_indices = [
+                int(row["slot_index"]) for row in solution_items
             ]
-            if solution_item_ids != expected_item_ids:
+            if (
+                solution_item_ids != expected_item_ids
+                or saved_slot_indices != solution_slot_indices
+            ):
                 connection.rollback()
                 raise FC27Error(
                     "SBC_SAVE_READBACK_FAILED",
-                    "The persisted SBC solution no longer matches the failed action.",
+                    "The persisted SBC solution no longer matches the failed action or fillable slots.",
                 )
             evidence = {
                 "saved_at_sync_id": int(batch["expected_sync_id"]),
                 "saved_item_ids": saved_item_ids,
+                "saved_slot_indices": saved_slot_indices,
                 "ea_eligible": True,
                 "reconciled": True,
                 "source": "ea_webapp_fresh",
@@ -1093,6 +1109,9 @@ class RuntimeDB:
     @staticmethod
     def _require_trusted_sbc_readback(response):
         saved_item_ids = [int(value) for value in response.get("saved_item_ids") or []]
+        saved_slot_indices = [
+            int(value) for value in response.get("saved_slot_indices") or []
+        ]
         squad = response.get("squad") or {}
         eligibility = squad.get("eligibility_evidence") or {}
         freshness = response.get("freshness") or {}
@@ -1109,6 +1128,9 @@ class RuntimeDB:
             and eligibility.get("submit_available") is True
             and bool(requirements)
             and all(value.get("met") is True for value in requirements)
+            and len(saved_slot_indices) == len(saved_item_ids)
+            and len(saved_slot_indices) == len(set(saved_slot_indices))
+            and all(0 <= value < 11 for value in saved_slot_indices)
         )
         if not trusted_readback:
             raise FC27Error(
@@ -1456,13 +1478,14 @@ class RuntimeDB:
                 "The submit action does not reference the expected saved or submitted solution.",
             )
         expected_item_ids = [int(value) for value in params["item_ids"]]
-        persisted_item_ids = [
-            int(row["item_id"])
-            for row in connection.execute(
-                """SELECT item_id FROM sbc_solution_items
-                   WHERE solution_id = ? ORDER BY slot_index""",
-                (params["solution_id"],),
-            )
+        solution_items = connection.execute(
+            """SELECT slot_index, item_id FROM sbc_solution_items
+               WHERE solution_id = ? ORDER BY slot_index""",
+            (params["solution_id"],),
+        ).fetchall()
+        persisted_item_ids = [int(row["item_id"]) for row in solution_items]
+        persisted_slot_indices = [
+            int(row["slot_index"]) for row in solution_items
         ]
         if persisted_item_ids != expected_item_ids:
             raise FC27Error(
@@ -1476,8 +1499,12 @@ class RuntimeDB:
                 "The submit action has no trusted pre-submit checkpoint.",
             )
         saved_item_ids = self._require_trusted_sbc_readback(pre_submit)
+        saved_slot_indices = [
+            int(value) for value in pre_submit.get("saved_slot_indices") or []
+        ]
         if (
             saved_item_ids != expected_item_ids
+            or saved_slot_indices != persisted_slot_indices
             or str((pre_submit.get("set") or {}).get("id"))
             != str(params["set_id"])
             or str((pre_submit.get("challenge") or {}).get("id"))
@@ -1577,6 +1604,12 @@ class RuntimeDB:
                                 "completed": value["completed"],
                                 "times_completed": value.get("times_completed"),
                                 "expires_at": value["expires_at"],
+                                "challenge_type": value.get("challenge_type"),
+                                "player_count": value.get("player_count"),
+                                "player_count_source": value.get("player_count_source"),
+                                "slot_indices": value.get("slot_indices"),
+                                "slot_indices_source": value.get("slot_indices_source"),
+                                "slot_layout_error": value.get("slot_layout_error"),
                                 "formation": value["formation"],
                                 "slots": value["slots"],
                                 "rewards": value["rewards"],
@@ -1756,6 +1789,18 @@ class RuntimeDB:
                 (self.persona_id,),
             ).fetchone()[0]
             expected_item_ids = [int(value) for value in params["item_ids"]]
+            solution_items = connection.execute(
+                """SELECT slot_index, item_id FROM sbc_solution_items
+                   WHERE solution_id = ? ORDER BY slot_index""",
+                (params["solution_id"],),
+            ).fetchall()
+            persisted_item_ids = [int(row["item_id"]) for row in solution_items]
+            persisted_slot_indices = [
+                int(row["slot_index"]) for row in solution_items
+            ]
+            saved_slot_indices = [
+                int(value) for value in response.get("saved_slot_indices") or []
+            ]
             set_value = response.get("set") or {}
             challenge = response.get("challenge") or {}
             if (
@@ -1766,6 +1811,8 @@ class RuntimeDB:
                 or solution is None
                 or solution["status"] != "saved"
                 or saved_item_ids != expected_item_ids
+                or persisted_item_ids != expected_item_ids
+                or saved_slot_indices != persisted_slot_indices
                 or str(set_value.get("id")) != str(params["set_id"])
                 or str(challenge.get("id")) != str(params["challenge_id"])
             ):
@@ -1779,6 +1826,7 @@ class RuntimeDB:
                 "expected_sync_id": expected_sync_id,
                 "pre_submit": response,
                 "saved_item_ids": saved_item_ids,
+                "saved_slot_indices": saved_slot_indices,
             }
             updated = connection.execute(
                 """UPDATE actions SET result_json = ?
@@ -1903,6 +1951,14 @@ class RuntimeDB:
                    ORDER BY a.finished_at DESC""",
                 (solution_id,),
             ).fetchall()
+            solution_items = connection.execute(
+                """SELECT slot_index, item_id FROM sbc_solution_items
+                   WHERE solution_id = ? ORDER BY slot_index""",
+                (solution_id,),
+            ).fetchall()
+        expected_slot_indices = [
+            int(row["slot_index"]) for row in solution_items
+        ]
         for row in rows:
             params = json.loads(row["params_json"])
             result = json.loads(row["result_json"]) if row["result_json"] else {}
@@ -1914,6 +1970,8 @@ class RuntimeDB:
                 != expected_item_ids
                 or [int(value) for value in result.get("saved_item_ids") or []]
                 != expected_item_ids
+                or [int(value) for value in result.get("saved_slot_indices") or []]
+                != expected_slot_indices
                 or result.get("saved_at_sync_id") != expected_sync_id
                 or result.get("source") != "ea_webapp_fresh"
             ):
@@ -1949,6 +2007,11 @@ class RuntimeDB:
                 != expected_item_ids
                 or result.get("submitted_at_sync_id") != expected_sync_id
                 or saved_item_ids != expected_item_ids
+                or [
+                    int(value)
+                    for value in saved_squad.get("saved_slot_indices") or []
+                ]
+                != expected_slot_indices
             ):
                 continue
             return {
@@ -1983,6 +2046,13 @@ class RuntimeDB:
         pre_submit = evidence.get("pre_submit") or {}
         self._require_trusted_sbc_submission_state(post_submit)
         saved_item_ids = self._require_trusted_sbc_readback(pre_submit)
+        saved_slot_indices = [
+            int(value) for value in pre_submit.get("saved_slot_indices") or []
+        ]
+        submitted_slot_indices = [
+            int(value)
+            for value in evidence.get("submitted_slot_indices") or []
+        ]
         if saved_item_ids != expected_item_ids:
             raise FC27Error(
                 "SBC_SUBMIT_STATE_INVALID",
@@ -2018,13 +2088,14 @@ class RuntimeDB:
                 "SELECT status, validation_json FROM sbc_solutions WHERE solution_id = ?",
                 (solution_id,),
             ).fetchone()
-            persisted_item_ids = [
-                int(row["item_id"])
-                for row in connection.execute(
-                    """SELECT item_id FROM sbc_solution_items
-                       WHERE solution_id = ? ORDER BY slot_index""",
-                    (solution_id,),
-                )
+            solution_items = connection.execute(
+                """SELECT slot_index, item_id FROM sbc_solution_items
+                   WHERE solution_id = ? ORDER BY slot_index""",
+                (solution_id,),
+            ).fetchall()
+            persisted_item_ids = [int(row["item_id"]) for row in solution_items]
+            persisted_slot_indices = [
+                int(row["slot_index"]) for row in solution_items
             ]
             if (
                 current_sync_id != submitted_sync_id
@@ -2032,6 +2103,8 @@ class RuntimeDB:
                 or solution is None
                 or solution["status"] != "saved"
                 or persisted_item_ids != expected_item_ids
+                or saved_slot_indices != persisted_slot_indices
+                or submitted_slot_indices != persisted_slot_indices
             ):
                 connection.rollback()
                 raise FC27Error(

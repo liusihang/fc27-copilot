@@ -1,0 +1,108 @@
+[
+  {
+    "set": "Intro to SBCs",
+    "challenge": "Break Away",
+    "published_at": "2025-09-16",
+    "player_count": 1,
+    "requirement_kinds": ["individual_overall_max"],
+    "requirements": ["Player OVR: Max. 64"],
+    "source": "https://www.fut.gg/api/fut/sbc/26/26-1-intro-to-sbcs/",
+    "solution_source": "https://www.fut.gg/api/squads/694b4237-bd64-4fa3-97cc-5e078e1414a6/"
+  },
+  {
+    "set": "Intro to SBCs",
+    "challenge": "A Brace",
+    "published_at": "2025-09-16",
+    "player_count": 2,
+    "requirement_kinds": ["individual_overall_min", "individual_overall_max"],
+    "requirements": ["Player OVR: Min. 65", "Player OVR: Max. 74"],
+    "source": "https://www.fut.gg/api/fut/sbc/26/26-1-intro-to-sbcs/",
+    "solution_source": "https://www.fut.gg/api/squads/c114bf85-54b8-44cc-b28e-8ece0ee4003b/"
+  },
+  {
+    "set": "Intro to SBCs",
+    "challenge": "Hat-trick",
+    "published_at": "2025-09-16",
+    "player_count": 3,
+    "requirement_kinds": ["individual_overall_min", "individual_overall_max"],
+    "requirements": ["Player OVR: Min. 65", "Player OVR: Max. 74"],
+    "source": "https://www.fut.gg/api/fut/sbc/26/26-1-intro-to-sbcs/",
+    "solution_source": "https://www.fut.gg/api/squads/2ea7548e-adb8-4b67-9a19-a50449f792c8/"
+  },
+  {
+    "set": "Intro to SBCs",
+    "challenge": "A Pair of Pairs",
+    "published_at": "2025-09-16",
+    "player_count": 4,
+    "requirement_kinds": ["individual_overall_min", "individual_overall_max"],
+    "requirements": ["Player OVR: Min. 75", "Player OVR: Max. 84"],
+    "source": "https://www.fut.gg/api/fut/sbc/26/26-1-intro-to-sbcs/",
+    "solution_source": "https://www.fut.gg/api/squads/ed32032e-5164-469c-8595-52bdff92b5f4/"
+  },
+  {
+    "set": "Golden Generation: England '66",
+    "challenge": "Wembley Glory",
+    "challenge_ea_id": 19,
+    "published_at": "2025-09-16",
+    "player_count": 11,
+    "requirement_kinds": ["league_count", "nation_count", "raw_scope_unavailable"],
+    "requirements": ["Five leagues", "Six nations"],
+    "source": "https://www.fut.gg/api/fut/sbc/26/26-8-golden-generation-england-66/",
+    "solution_source": "https://www.fut.gg/api/squads/3200754d-5175-41f8-a7f1-ab3e1eb9eadb/"
+  },
+  {
+    "set": "1 of 3 80+ Player Pick",
+    "challenge": "1 of 3 80+ Player Pick",
+    "challenge_ea_id": 659,
+    "published_at": "2025-11-28",
+    "player_count": 8,
+    "requirement_kinds": ["quality_min", "rare_count_min"],
+    "requirements": ["Min. 5 Players: Rare", "Player quality: Min. Gold", "Number of players: 8"],
+    "source": "https://www.fut.gg/api/fut/sbc/26/26-250-1-of-3-80-player-pick/",
+    "solution_source": "https://www.fut.gg/api/squads/b2eed296-014b-4eba-99ed-0a5785b2dc1b/"
+  },
+  {
+    "set": "Serie A POTM November",
+    "challenge": "Top Form",
+    "challenge_ea_id": 810,
+    "published_at": "2025-12-11",
+    "player_count": 11,
+    "requirement_kinds": ["team_rating_min", "special_card_count_min"],
+    "requirements": ["Min. 1 Team of the Week", "Min. Team Rating: 84"],
+    "source": "https://www.fut.gg/api/fut/sbc/26/26-300-serie-a-potm-november/",
+    "solution_source": "https://www.fut.gg/api/squads/9e23d258-c683-4c2e-861c-b056114711b7/"
+  },
+  {
+    "set": "1 of 3 87+ Campaign Mix Player Pick",
+    "challenge": "84-Rated Squad",
+    "challenge_ea_id": 1138,
+    "published_at": "2026-01-14",
+    "player_count": 11,
+    "requirement_kinds": ["team_rating_min"],
+    "requirements": ["Min. Team Rating: 84"],
+    "source": "https://www.fut.gg/api/fut/sbc/26/26-400-1-of-3-87-campaign-mix-player-pick/",
+    "solution_source": "https://www.fut.gg/api/squads/75bb1ad4-d4d4-4a95-a082-5b436ef89aee/"
+  },
+  {
+    "set": "89+ Encore Icon Upgrade",
+    "challenge": "86-Rated Squad",
+    "challenge_ea_id": 1631,
+    "published_at": "2026-02-15",
+    "player_count": 11,
+    "requirement_kinds": ["team_rating_min", "special_card_count_min"],
+    "requirements": ["Min. 1 Team of the Week", "Min. Team Rating: 86"],
+    "source": "https://www.fut.gg/api/fut/sbc/26/26-550-89-encore-icon-upgrade/",
+    "solution_source": "https://www.fut.gg/api/squads/b10f0e3b-3e70-4cae-96cc-e3a09308823e/"
+  },
+  {
+    "set": "Bernardo Silva",
+    "challenge": "Manchester City",
+    "challenge_ea_id": 1935,
+    "published_at": "2026-03-11",
+    "player_count": 11,
+    "requirement_kinds": ["club_match_min", "team_rating_min", "special_card_count_min"],
+    "requirements": ["Min. 1 Manchester City player", "Min. 1 Team of the Week", "Min. Team Rating: 86"],
+    "source": "https://www.fut.gg/api/fut/sbc/26/26-650-bernardo-silva/",
+    "solution_source": "https://www.fut.gg/api/squads/394f93f6-4871-4429-bfbd-6a30260c9564/"
+  }
+]

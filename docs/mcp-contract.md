@@ -119,7 +119,34 @@ Refreshes and persists live SBC sets/challenges or reads the local cache. It ret
 
 ### `FC27:sbc_solve`
 
-Generates and persists multiple exact-item candidates from the latest owned-item mirror under a caller-provided objective. Protected, loan, stale, duplicate, Tradepile, and explicitly excluded items are rejected. It returns the exact slot order and validation evidence and never saves or submits.
+Optimizes and persists multiple exact-item candidates from the latest owned-item mirror with OR-Tools CP-SAT. Protected, loan, stale, duplicate, Tradepile, and explicitly excluded items are rejected. Every candidate is independently revalidated before persistence. Results distinguish `optimal`, deadline-bounded `feasible`, `infeasible`, and `unknown` solver outcomes and never save or submit.
+
+The Agent can require concrete owned items:
+
+```json
+{
+  "challenge_id": "16",
+  "objective": {
+    "required_item_ids": [800013],
+    "exclude_item_ids": [],
+    "prefer_untradeable": true,
+    "max_tradeable_value": 0,
+    "max_item_overall": 82
+  },
+  "max_solutions": 5
+}
+```
+
+`required_item_ids` contains exact current club `item_id` values. When the user names a player or card, the Agent first calls `FC27:club_query`, selects the intended owned instance, and passes its `item_id`. Every returned candidate contains every required item. Required items do not bypass protection, loan, location, candidate-pool, exclusion, overall, value, stale-state, or unsupported-requirement checks.
+
+Supported objective fields are:
+
+- `candidate_item_ids`: restrict the complete candidate pool;
+- `required_item_ids`: pin exact current owned items up to the challenge's captured player count;
+- `exclude_item_ids`: reject exact owned items;
+- `prefer_untradeable`: prioritize fewer tradeable items before their value;
+- `max_tradeable_value`: hard upper bound for selected tradeable opportunity cost;
+- `max_item_overall`: preserve cards above a caller-selected overall.
 
 ### `FC27:execute_actions`
 
@@ -165,6 +192,13 @@ Save and submit reconciliation are narrow localhost daemon RPCs, not additional 
 | `TRADE_NOT_FOUND` | Exact market trade is no longer available. | Search again and choose a current trade ID. |
 | `CONTENT_SOURCE_UNAVAILABLE` | The selected provider does not expose that content type through a stable machine-readable dataset. | Use EA for objectives/SBCs or FUT.GG for evolutions. |
 | `SBC_SCHEMA_UNSUPPORTED` | Captured requirement type is not normalized. | Inspect raw evidence and implement that requirement before solving. |
+| `SBC_OBJECTIVE_INVALID` | The Agent objective has an unknown field, invalid type, duplicate required ID, or invalid limit. | Correct the reported field and retry. |
+| `SBC_OBJECTIVE_CONFLICT` | Required, excluded, candidate, slot, overall, or value limits contradict one another. | Remove the reported conflict or widen the objective. |
+| `SBC_REQUIRED_ITEM_MISSING` | A required item ID is absent from the latest current club mirror. | Run `sync_club`, resolve the current item through `club_query`, and retry. |
+| `SBC_REQUIRED_ITEM_INELIGIBLE` | A required item is protected, loaned, in an unsupported location, absent from the catalog, or filtered by the objective. | Choose an eligible owned item or revise the explicit objective. |
+| `SBC_NO_SOLUTION` | CP-SAT proved that no owned-item combination satisfies the normalized challenge and objective. | Review fixed items and exclusions, widen the pool, or acquire eligible cards. |
+| `SBC_SOLVER_TIMEOUT` | The bounded optimizer reached its deadline without a feasible candidate. | Narrow the pool or retry with a simpler objective. |
+| `SBC_SOLVER_VALIDATION_FAILED` | A model result failed the independent validator. | Treat this as an implementation defect and inspect the returned evidence. |
 | `SBC_NOT_ELIGIBLE` | Saved squad fails local or EA validation. | Inspect failed constraints and rebuild the squad. |
 | `SBC_SUBMIT_ALREADY_ATTEMPTED` | The solution already has an active, completed, or unresolved submit. | Replay or reconcile the original action ID. |
 | `SBC_SUBMIT_OUTCOME_UNKNOWN` | The submit write timed out before its outcome was known. | Reconcile the original action; never submit a new batch. |

@@ -194,6 +194,10 @@ class ActionDispatcher:
         validation = service.validate_solution(
             action["solution_id"], expected_sync_id
         )
+        slot_indices = [
+            int(value["slot_index"])
+            for value in validation["solution"]["slots"]
+        ]
         try:
             save_response = self._call(
                 "saveSbcSquad",
@@ -201,6 +205,7 @@ class ActionDispatcher:
                     "set_id": action["set_id"],
                     "challenge_id": action["challenge_id"],
                     "item_ids": action["item_ids"],
+                    "slot_indices": slot_indices,
                 },
             )
         except FC27Error as error:
@@ -218,6 +223,7 @@ class ActionDispatcher:
                 {
                     "set_id": action["set_id"],
                     "challenge_id": action["challenge_id"],
+                    "slot_indices": slot_indices,
                 },
             )
             saved_item_ids = [int(value) for value in response.get("saved_item_ids") or []]
@@ -226,6 +232,18 @@ class ActionDispatcher:
                     "SBC_SAVE_READBACK_FAILED",
                     "Fresh EA SBC readback did not preserve the exact confirmed item order.",
                     details={"saved_item_ids": saved_item_ids},
+                )
+            saved_slot_indices = [
+                int(value) for value in response.get("saved_slot_indices") or []
+            ]
+            if saved_slot_indices != slot_indices:
+                raise FC27Error(
+                    "SBC_SAVE_READBACK_FAILED",
+                    "Fresh EA SBC readback did not preserve the exact fillable slot layout.",
+                    details={
+                        "saved_slot_indices": saved_slot_indices,
+                        "expected_slot_indices": slot_indices,
+                    },
                 )
             eligibility = response.get("squad", {}).get("eligibility_evidence") or {}
             freshness = response.get("freshness") or {}
@@ -256,6 +274,7 @@ class ActionDispatcher:
         evidence = {
             "saved_at_sync_id": expected_sync_id,
             "saved_item_ids": saved_item_ids,
+            "saved_slot_indices": saved_slot_indices,
             "ea_eligible": True,
             "reconciled": False,
             "source": "ea_webapp_fresh",
@@ -273,9 +292,17 @@ class ActionDispatcher:
         validation = service.validate_solution(
             action["solution_id"], expected_sync_id
         )
+        slot_indices = [
+            int(value["slot_index"])
+            for value in validation["solution"]["slots"]
+        ]
         pre_submit = self._call(
             "readSavedSbcSquad",
-            {"set_id": action["set_id"], "challenge_id": action["challenge_id"]},
+            {
+                "set_id": action["set_id"],
+                "challenge_id": action["challenge_id"],
+                "slot_indices": slot_indices,
+            },
         )
         self.runtime.record_sbc_submit_checkpoint(
             action["action_id"], expected_sync_id, pre_submit
@@ -287,6 +314,7 @@ class ActionDispatcher:
                     "set_id": action["set_id"],
                     "challenge_id": action["challenge_id"],
                     "item_ids": action["item_ids"],
+                    "slot_indices": slot_indices,
                     "expected_counters": {
                         "challenge_times_completed": (
                             pre_submit.get("challenge") or {}
@@ -321,6 +349,18 @@ class ActionDispatcher:
                     "EA submit response did not preserve the exact confirmed item order.",
                     details={"submitted_item_ids": submitted_item_ids},
                 )
+            submitted_slot_indices = [
+                int(value) for value in response.get("submitted_slot_indices") or []
+            ]
+            if submitted_slot_indices != slot_indices:
+                raise FC27Error(
+                    "SBC_SUBMIT_RESPONSE_MISMATCH",
+                    "EA submit response did not preserve the exact fillable slot layout.",
+                    details={
+                        "submitted_slot_indices": submitted_slot_indices,
+                        "expected_slot_indices": slot_indices,
+                    },
+                )
             sync = self.sync_full("post_sbc_submit")
             remaining = {
                 row["item_id"]
@@ -343,6 +383,7 @@ class ActionDispatcher:
             evidence = {
                 "submitted_at_sync_id": sync["sync_id"],
                 "submitted_item_ids": action["item_ids"],
+                "submitted_slot_indices": slot_indices,
                 "source": "ea_webapp_fresh",
                 "pre_submit": pre_submit,
                 "post_submit": post_submit,

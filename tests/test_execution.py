@@ -199,6 +199,24 @@ class ExecutionServiceTest(unittest.TestCase):
             service.execute(self.request(actions=[missing]))
         self.assertEqual(context.exception.code, "ITEM_NOT_FOUND")
 
+    def test_sbc_action_normalization_accepts_variable_unique_item_count(self):
+        action = {
+            "action_id": "save-1",
+            "idempotency_key": "save-1",
+            "type": "save_sbc_squad",
+            "set_id": "1",
+            "challenge_id": "1",
+            "solution_id": "solution-1",
+            "item_ids": [101, 102, 103],
+        }
+        normalized = ExecutionService._normalize_action(action)
+        self.assertEqual(normalized["item_ids"], [101, 102, 103])
+
+        action["item_ids"] = []
+        with self.assertRaises(FC27Error) as empty:
+            ExecutionService._normalize_action(action)
+        self.assertEqual(empty.exception.code, "INVALID_ACTION")
+
 
 if __name__ == "__main__":
     unittest.main()

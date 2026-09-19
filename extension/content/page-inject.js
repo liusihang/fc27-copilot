@@ -77,9 +77,18 @@
     if (normalizedMethod === 'GET' || normalizedMethod === 'HEAD') return;
     if (Number(status) < 200 || Number(status) >= 300) return;
     if (!detectApiBase(rawUrl)) return;
+    let url;
     let path;
-    try { path = new URL(rawUrl, window.location.href).pathname; }
+    try {
+      url = new URL(rawUrl, window.location.href);
+      path = url.pathname;
+    }
     catch { return; }
+    if (
+      normalizedMethod === 'POST'
+      && /\/sbs\/challenge\/\d+\/?$/.test(path)
+      && !url.searchParams.has('skipUserSquadValidation')
+    ) return;
     const mutationPaths = ['/auctionhouse', '/item', '/tradepile', '/sbs/', '/packs/', '/scmp/', '/academy/'];
     if (!mutationPaths.some((value) => path.includes(value))) return;
     window.postMessage({
@@ -452,8 +461,90 @@
     return output;
   }
 
-  function plainSbcChallenge(challenge) {
+  function isSbcSlotRequirements(value) {
+    return Array.isArray(value)
+      && value.length > 0
+      && value.every((entry) => (
+        entry
+        && typeof entry === 'object'
+        && Number.isInteger(Number(entry.index))
+        && Object.prototype.hasOwnProperty.call(entry, 'playerType')
+      ));
+  }
+
+  function directArray(value, keys) {
+    if (!value || typeof value !== 'object') return null;
+    for (const key of keys) {
+      if (Array.isArray(value[key])) return value[key];
+    }
+    return null;
+  }
+
+  function sbcSlotMetadata(challenge, detailPayload = null, squad = null) {
+    const slotRequirements = [
+      detailPayload?.playerRequirements,
+      detailPayload?.playerrequirements,
+      detailPayload?.slotRequirements,
+      detailPayload?.squad?.playerRequirements,
+      detailPayload?.squad?.playerrequirements,
+      detailPayload?.squad?.slotRequirements,
+      squad?.playerRequirements,
+      squad?.playerrequirements,
+      squad?.slotRequirements,
+      challenge?.playerRequirements,
+      challenge?.playerrequirements,
+      challenge?.slotRequirements,
+    ].find(isSbcSlotRequirements) || null;
+    if (slotRequirements) {
+      const slotIndices = [...new Set(
+        slotRequirements
+          .filter((entry) => (
+            Number(entry.index) >= 0
+            && Number(entry.index) < 11
+            && String(entry.playerType || 'DEFAULT').toUpperCase() !== 'BRICK'
+          ))
+          .map((entry) => Number(entry.index))
+      )].sort((left, right) => left - right);
+      if (slotIndices.length) {
+        return {
+          slot_indices: slotIndices,
+          slot_indices_source: 'ea_player_requirements',
+          slot_requirements: plainValue(slotRequirements, 0, new WeakSet(), 8),
+        };
+      }
+    }
+    const brickIndices = directArray(squad, ['simpleBrickIndices', 'brickIndices'])
+      || directArray(detailPayload?.squad, ['simpleBrickIndices', 'brickIndices'])
+      || directArray(detailPayload, ['simpleBrickIndices', 'brickIndices']);
+    if (brickIndices) {
+      const bricks = new Set(
+        brickIndices
+          .map(Number)
+          .filter((index) => Number.isInteger(index) && index >= 0 && index < 11)
+      );
+      return {
+        slot_indices: Array.from({ length: 11 }, (_, index) => index)
+          .filter((index) => !bricks.has(index)),
+        slot_indices_source: 'ea_simple_brick_indices',
+        slot_requirements: null,
+      };
+    }
+    return {
+      slot_indices: null,
+      slot_indices_source: null,
+      slot_requirements: null,
+    };
+  }
+
+  function plainSbcChallenge(challenge, detailPayload = null, squad = null) {
     const requirements = challenge?.eligibilityRequirements || challenge?.requirements || [];
+    const slotMetadata = sbcSlotMetadata(challenge, detailPayload, squad);
+    const declaredPlayerCount = readValue(
+      challenge,
+      ['playerCount', 'requiredPlayerCount', 'maxPlayers', 'squadSize', 'numberOfPlayers']
+    );
+    const raw = plainValue(challenge, 0, new WeakSet(), 8);
+    if (raw && typeof raw === 'object') delete raw.squad;
     return {
       id: readValue(challenge, ['id', 'challengeId']),
       set_id: readValue(challenge, ['setId']),
@@ -464,11 +555,16 @@
       repeatable: Boolean(readValue(challenge, ['repeatable', 'isRepeatable'])),
       completed: typeof challenge?.isCompleted === 'function' ? Boolean(challenge.isCompleted()) : Boolean(challenge?.completed),
       times_completed: readValue(challenge, ['timesCompleted']),
+      challenge_type: readValue(challenge, ['type', 'challengeType']),
+      player_count: declaredPlayerCount ?? slotMetadata.slot_indices?.length ?? null,
+      slot_indices: slotMetadata.slot_indices,
+      slot_indices_source: slotMetadata.slot_indices_source,
+      slot_requirements: slotMetadata.slot_requirements,
       formation: plainValue(readValue(challenge, ['formation', 'formationData']), 0, new WeakSet(), 8),
       slots: plainValue(readValue(challenge, ['slots', 'squadSlots', 'positions']), 0, new WeakSet(), 8),
       rewards: plainValue(readValue(challenge, ['rewards', 'awards']), 0, new WeakSet(), 8),
       requirements: plainValue(requirements, 0, new WeakSet(), 8),
-      raw: plainValue(challenge, 0, new WeakSet(), 8),
+      raw,
     };
   }
 
@@ -484,7 +580,7 @@
         ? players.map((entry, slotIndex) => {
           const item = typeof entry?.getItem === 'function' ? entry.getItem() : entry?.item;
           return {
-            slot_index: slotIndex,
+            slot_index: Number(readValue(entry, ['index', 'slotIndex']) ?? slotIndex),
             position: readValue(entry, ['position', 'positionId'], ['getPosition']),
             item: item ? serializeItem(item) : null,
             raw: plainValue(entry, 0, new WeakSet(), 5),
@@ -531,6 +627,11 @@
       .filter((itemId) => Number.isFinite(itemId) && itemId > 0);
   }
 
+  function savedSbcSlotIndices(squad) {
+    const normalized = sbcSquadReadback(squad);
+    return (normalized?.players || []).map((entry) => Number(entry.slot_index));
+  }
+
   function sbcSquadReadback(squad, eligibility = null) {
     if (!squad) return null;
     const players = typeof squad.getPlayers === 'function' ? squad.getPlayers() : squad.players;
@@ -538,11 +639,13 @@
       ? players.map((entry, slotIndex) => {
         const item = typeof entry?.getItem === 'function' ? entry.getItem() : entry?.item;
         return {
-          slot_index: slotIndex,
+          slot_index: Number(readValue(entry, ['index', 'slotIndex']) ?? slotIndex),
           position: readValue(entry, ['position', 'positionId'], ['getPosition']),
           item: item ? serializeItem(item) : null,
         };
-      }).filter((entry) => Number(entry.item?.item_id) > 0)
+      })
+        .filter((entry) => Number(entry.item?.item_id) > 0)
+        .sort((left, right) => left.slot_index - right.slot_index)
       : [];
     return {
       formation: readValue(squad, ['formation', 'formationId', '_formation']),
@@ -590,7 +693,7 @@
     };
   }
 
-  function sbcActionReadback(set, challenge, squad, eligibility, status = null) {
+  function sbcActionReadback(set, challenge, squad, eligibility, status = null, detailPayload = null) {
     return {
       set: {
         id: readValue(set, ['id', 'setId']),
@@ -601,20 +704,10 @@
         times_completed: readValue(set, ['timesCompleted']),
         rewards: plainValue(readValue(set, ['rewards', 'awards']), 0, new WeakSet(), 8),
       },
-      challenge: {
-        id: readValue(challenge, ['id', 'challengeId']),
-        set_id: readValue(challenge, ['setId']),
-        name: readValue(challenge, ['name', 'displayName']),
-        status: readValue(challenge, ['status']),
-        completed: typeof challenge?.isCompleted === 'function'
-          ? Boolean(challenge.isCompleted())
-          : Boolean(challenge?.completed),
-        repeatable: Boolean(readValue(challenge, ['repeatable', 'isRepeatable'])),
-        times_completed: readValue(challenge, ['timesCompleted']),
-        rewards: plainValue(readValue(challenge, ['rewards', 'awards']), 0, new WeakSet(), 8),
-      },
+      challenge: plainSbcChallenge(challenge, detailPayload, squad),
       squad: sbcSquadReadback(squad, eligibility),
       saved_item_ids: savedSbcItemIds(squad),
+      saved_slot_indices: savedSbcSlotIndices(squad),
       status,
     };
   }
@@ -776,15 +869,35 @@
     return items;
   }
 
-  async function loadChallengeSquad(appServices, challenge) {
-    const response = await observeOnce(appServices.SBC.loadChallenge(challenge));
+  async function loadChallengeState(appServices, challenge, timeoutMs = 30000) {
+    const response = await observeOnce(appServices.SBC.loadChallenge(challenge), timeoutMs);
     const payload = response.data ?? response.response ?? {};
     const squad = payload.squad ?? challenge.squad ?? null;
     if (!squad) {
       throw Object.assign(new Error(`SBC challenge ${challenge.id} did not return a squad.`), { code: 'SBC_SQUAD_UNAVAILABLE' });
     }
     challenge.squad = squad;
-    return squad;
+    return { payload, squad, status: response.status ?? null };
+  }
+
+  async function loadPlainSbcChallenge(appServices, challenge) {
+    try {
+      const state = await loadChallengeState(appServices, challenge, 15000);
+      return plainSbcChallenge(challenge, state.payload, state.squad);
+    } catch (error) {
+      const completed = typeof challenge?.isCompleted === 'function'
+        ? Boolean(challenge.isCompleted())
+        : String(readValue(challenge, ['status'])).toUpperCase() === 'COMPLETED';
+      if (!completed) throw error;
+      return {
+        ...plainSbcChallenge(challenge),
+        slot_layout_error: {
+          code: error?.code || 'SBC_SLOT_LAYOUT_UNAVAILABLE',
+          status: error?.status ?? null,
+          message: error?.message || String(error),
+        },
+      };
+    }
   }
 
   function requireWebAppServices() {
@@ -1028,9 +1141,13 @@
 
     async getSbcChallenges(params) {
       const loaded = await loadSbcChallenges(params.set_id);
+      const challenges = [];
+      for (const challenge of loaded.challenges) {
+        challenges.push(await loadPlainSbcChallenge(loaded.appServices, challenge));
+      }
       return {
         set: plainSbcSet(loaded.set),
-        challenges: loaded.challenges.map(plainSbcChallenge),
+        challenges,
         status: loaded.status,
       };
     },
@@ -1040,13 +1157,23 @@
         const loaded = await loadSbcChallenges(params.set_id);
         const challenge = loaded.challenges.find((entry) => String(readValue(entry, ['id', 'challengeId'])) === String(params.challenge_id));
         if (!challenge) throw Object.assign(new Error(`SBC challenge ${params.challenge_id} was not found.`), { code: 'SBC_CHALLENGE_NOT_FOUND' });
-        return { set: plainSbcSet(loaded.set), challenge: plainSbcChallenge(challenge), status: loaded.status };
+        return {
+          set: plainSbcSet(loaded.set),
+          challenge: await loadPlainSbcChallenge(loaded.appServices, challenge),
+          status: loaded.status,
+        };
       }
       const loaded = await loadSbcSets();
       for (const set of loaded.sets) {
         const result = await requestSbcChallenges(loaded.appServices, set);
         const challenge = result.challenges.find((entry) => String(readValue(entry, ['id', 'challengeId'])) === String(params.challenge_id));
-        if (challenge) return { set: plainSbcSet(set), challenge: plainSbcChallenge(challenge), status: result.status };
+        if (challenge) {
+          return {
+            set: plainSbcSet(set),
+            challenge: await loadPlainSbcChallenge(result.appServices, challenge),
+            status: result.status,
+          };
+        }
       }
       throw Object.assign(new Error(`SBC challenge ${params.challenge_id} was not found.`), { code: 'SBC_CHALLENGE_NOT_FOUND' });
     },
@@ -1054,9 +1181,43 @@
     async saveSbcSquad(params) {
       const loaded = await findSbcChallenge(params.set_id, params.challenge_id);
       const items = await exactOwnedItems(loaded.appServices, params.item_ids || []);
-      const squad = await loadChallengeSquad(loaded.appServices, loaded.challenge);
+      const state = await loadChallengeState(loaded.appServices, loaded.challenge);
+      const squad = state.squad;
+      const liveSlotIndices = sbcSlotMetadata(
+        loaded.challenge,
+        state.payload,
+        squad
+      ).slot_indices;
+      const expectedSlotIndices = (params.slot_indices || []).map(Number);
+      if (
+        !liveSlotIndices
+        || liveSlotIndices.length !== expectedSlotIndices.length
+        || liveSlotIndices.some((slotIndex, index) => slotIndex !== expectedSlotIndices[index])
+      ) {
+        throw Object.assign(new Error('The live SBC fillable slots do not match the persisted solution.'), {
+          code: 'SBC_SLOT_LAYOUT_MISMATCH',
+          payload: { live_slot_indices: liveSlotIndices, expected_slot_indices: expectedSlotIndices },
+        });
+      }
       squad.removeAllItems();
       squad.setPlayers(items, true);
+      const placedSlotIndices = savedSbcSlotIndices(squad);
+      const placedItemIds = savedSbcItemIds(squad);
+      if (
+        placedSlotIndices.length !== expectedSlotIndices.length
+        || placedSlotIndices.some((slotIndex, index) => slotIndex !== expectedSlotIndices[index])
+        || placedItemIds.length !== items.length
+        || placedItemIds.some((itemId, index) => itemId !== Number(params.item_ids[index]))
+      ) {
+        throw Object.assign(new Error('EA did not place the SBC items into the expected fillable slots.'), {
+          code: 'SBC_SLOT_PLACEMENT_MISMATCH',
+          payload: {
+            placed_slot_indices: placedSlotIndices,
+            expected_slot_indices: expectedSlotIndices,
+            placed_item_ids: placedItemIds,
+          },
+        });
+      }
       const response = await observeOnce(loaded.appServices.SBC.saveChallenge(loaded.challenge));
       return {
         set_id: Number(params.set_id),
@@ -1096,7 +1257,8 @@
           loaded.challenge,
           squad,
           eligibility,
-          response.status ?? null
+          response.status ?? null,
+          response.data ?? response.response ?? null
         ),
         source: 'ea_webapp_fresh',
         freshness: {
@@ -1111,7 +1273,7 @@
       const loaded = await findSbcChallenge(params.set_id, params.challenge_id);
       return {
         set: plainSbcSet(loaded.set),
-        challenge: plainSbcChallenge(loaded.challenge),
+        challenge: await loadPlainSbcChallenge(loaded.appServices, loaded.challenge),
         source: 'ea_webapp_fresh',
         freshness: {
           sets_requested: true,
@@ -1135,11 +1297,23 @@
       }
       loaded.challenge.squad = squad;
       const savedIds = savedSbcItemIds(squad);
+      const savedSlotIndices = savedSbcSlotIndices(squad);
       const expectedIds = (params.item_ids || []).map(Number);
-      if (savedIds.length !== expectedIds.length || savedIds.some((itemId, index) => itemId !== expectedIds[index])) {
+      const expectedSlotIndices = (params.slot_indices || []).map(Number);
+      if (
+        savedIds.length !== expectedIds.length
+        || savedIds.some((itemId, index) => itemId !== expectedIds[index])
+        || savedSlotIndices.length !== expectedSlotIndices.length
+        || savedSlotIndices.some((slotIndex, index) => slotIndex !== expectedSlotIndices[index])
+      ) {
         throw Object.assign(new Error('The saved SBC squad does not match the confirmed item order.'), {
           code: 'SBC_SAVED_SQUAD_MISMATCH',
-          payload: { saved_item_ids: savedIds, expected_item_ids: expectedIds },
+          payload: {
+            saved_item_ids: savedIds,
+            expected_item_ids: expectedIds,
+            saved_slot_indices: savedSlotIndices,
+            expected_slot_indices: expectedSlotIndices,
+          },
         });
       }
       const eligibility = currentSbcSubmissionEvidence(
@@ -1184,6 +1358,7 @@
       );
       return {
         submitted_item_ids: savedIds,
+        submitted_slot_indices: savedSlotIndices,
         status: response.status ?? null,
         success: response.success !== false,
         data: plainValue(response.data ?? response.response ?? null, 0, new WeakSet(), 8),

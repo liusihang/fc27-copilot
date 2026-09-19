@@ -29,11 +29,32 @@ ACTION_SCHEMA = {
         "challenge_id": {"type": ["integer", "string"]},
         "set_id": {"type": ["integer", "string"]},
         "solution_id": {"type": "string"},
-        "item_ids": {"type": "array", "items": {"type": "integer"}, "minItems": 11, "maxItems": 11},
+        "item_ids": {"type": "array", "items": {"type": "integer", "minimum": 1}, "minItems": 1, "maxItems": 11, "uniqueItems": True},
     },
     "required": ["action_id", "idempotency_key", "type"],
     "additionalProperties": True,
 }
+
+ITEM_ID_ARRAY_SCHEMA = {
+    "type": "array",
+    "items": {"type": "integer", "minimum": 1},
+    "uniqueItems": True,
+    "maxItems": 1000,
+}
+
+SBC_OBJECTIVE_SCHEMA = object_schema(
+    {
+        "candidate_item_ids": ITEM_ID_ARRAY_SCHEMA,
+        "required_item_ids": {
+            **ITEM_ID_ARRAY_SCHEMA,
+            "maxItems": 11,
+        },
+        "exclude_item_ids": ITEM_ID_ARRAY_SCHEMA,
+        "prefer_untradeable": {"type": "boolean", "default": True},
+        "max_tradeable_value": {"type": "integer", "minimum": 0},
+        "max_item_overall": {"type": "integer", "minimum": 1, "maximum": 99},
+    }
+)
 
 
 TOOLS = [
@@ -99,8 +120,8 @@ TOOLS = [
     },
     {
         "name": "sbc_solve",
-        "description": "Generate and persist multiple deterministic exact-item SBC candidates from the latest owned-item mirror under caller limits. It excludes protected, missing, loan, duplicate, and explicitly excluded items; returns validation evidence; and refuses unsupported challenge constraints. It never saves or submits.",
-        "inputSchema": object_schema({"challenge_id": {"type": ["integer", "string"]}, "objective": {"type": "object"}, "max_solutions": {"type": "integer", "minimum": 1, "maximum": 10, "default": 5}}, ["challenge_id"]),
+        "description": "Optimize and persist exact owned-item SBC candidates with OR-Tools CP-SAT. Use after sbc_query and a complete club sync. The Agent may pin concrete club instances with objective.required_item_ids; resolve names or cards through club_query and pass item_id values, not card_ea_id values. Every returned squad contains all required items, satisfies every supported local constraint, and includes solver plus independent validation evidence. Protected, missing, loan, duplicate, stale, Tradepile, and explicitly excluded items are rejected. Unsupported EA constraints remain blocking. The tool never saves or submits.",
+        "inputSchema": object_schema({"challenge_id": {"type": ["integer", "string"]}, "objective": SBC_OBJECTIVE_SCHEMA, "max_solutions": {"type": "integer", "minimum": 1, "maximum": 10, "default": 5}}, ["challenge_id"]),
         "annotations": {"readOnlyHint": True, "destructiveHint": False, "idempotentHint": False, "openWorldHint": False},
     },
     {

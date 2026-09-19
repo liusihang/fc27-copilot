@@ -34,10 +34,37 @@ class FakeBridge:
             value = value()
         if isinstance(value, Exception):
             raise value
+        if method == "submitSbc" and isinstance(value, dict):
+            value = {
+                **value,
+                "submitted_slot_indices": value.get(
+                    "submitted_slot_indices", params.get("slot_indices") or []
+                ),
+            }
         return {"ok": True, "data": value}
 
 
-def browser_challenge(item_ids=None, *, times_completed=0, status="IN_PROGRESS"):
+def browser_challenge(
+    item_ids=None, *, times_completed=0, status="IN_PROGRESS", player_count=11
+):
+    if player_count == 11:
+        challenge_type = "OPEN_CHALLENGE"
+        requirements = [
+            {
+                "kvPairs": {"_collection": {"3": [1]}},
+                "count": -1,
+                "scope": 2,
+            }
+        ]
+    else:
+        challenge_type = "BRICK_CHALLENGE"
+        requirements = [
+            {
+                "kvPairs": {"_collection": {"28": [64]}},
+                "count": player_count,
+                "scope": 0,
+            }
+        ]
     value = {
         "set": {
             "id": 4,
@@ -62,18 +89,15 @@ def browser_challenge(item_ids=None, *, times_completed=0, status="IN_PROGRESS")
             "repeatable": True,
             "completed": False,
             "times_completed": times_completed,
+            "challenge_type": challenge_type,
+            "slot_indices": list(range(player_count)),
             "formation": "f41212",
             "rewards": [],
-            "requirements": [
-                {
-                    "kvPairs": {"_collection": {"3": [1]}},
-                    "count": -1,
-                    "scope": 2,
-                }
-            ],
+            "requirements": requirements,
             "raw": {
                 "id": 16,
                 "formation": "f41212",
+                "type": challenge_type,
                 "repeatable": True,
                 "status": status,
                 "timesCompleted": times_completed,
@@ -82,6 +106,7 @@ def browser_challenge(item_ids=None, *, times_completed=0, status="IN_PROGRESS")
     }
     if item_ids is not None:
         value["saved_item_ids"] = item_ids
+        value["saved_slot_indices"] = list(range(player_count))
         value["squad"] = {
             "eligible": True,
             "eligibility_evidence": {
@@ -101,10 +126,13 @@ def browser_challenge(item_ids=None, *, times_completed=0, status="IN_PROGRESS")
     return value
 
 
-def submission_state(times_completed, *, status="NOT_STARTED", completed=False):
+def submission_state(
+    times_completed, *, status="NOT_STARTED", completed=False, player_count=11
+):
     value = browser_challenge(
         times_completed=times_completed,
         status=status,
+        player_count=player_count,
     )
     value["challenge"]["completed"] = completed
     value["source"] = "ea_webapp_fresh"
@@ -206,6 +234,14 @@ class SbcActionTest(unittest.TestCase):
                 "actions": [self.action(action_type, f"{action_type}-1")],
             }
         )
+
+    def use_partial_solution(self, player_count):
+        payload = browser_challenge(player_count=player_count)
+        self.sbc.capture_challenge(payload)
+        self.solution = self.sbc.solve(
+            "16", {"max_tradeable_value": 0}, 1
+        )["solutions"][0]
+        self.assertEqual(len(self.solution["item_ids"]), player_count)
 
     def insert_failed_save(
         self,
@@ -363,6 +399,68 @@ class SbcActionTest(unittest.TestCase):
                 "set_completed_count": 0,
             },
         )
+
+    def test_partial_squad_save_and_submit_preserve_actual_player_count(self):
+        self.use_partial_solution(3)
+        item_ids = self.solution["item_ids"]
+        save_bridge = FakeBridge(
+            {
+                "saveSbcSquad": {
+                    "set_id": 4,
+                    "challenge_id": 16,
+                    "requested_item_ids": item_ids,
+                },
+                "readSavedSbcSquad": browser_challenge(
+                    item_ids, player_count=3
+                ),
+            }
+        )
+        saved = self.execute(
+            "save_sbc_squad", save_bridge, lambda kind: None, "partial-save"
+        )
+        self.assertEqual(saved["batch"]["status"], "complete")
+        save_call = next(
+            params for method, params in save_bridge.calls if method == "saveSbcSquad"
+        )
+        self.assertEqual(save_call["item_ids"], item_ids)
+
+        def sync_full(kind):
+            sync_id = self.runtime.begin_sync(kind)
+            payload = {
+                area: {
+                    "area": area,
+                    "page_count": 1,
+                    "item_count": 0,
+                    "complete": True,
+                    "items": [],
+                    "listings": [],
+                    **({"coin_balance": 10000} if area == "coins" else {}),
+                }
+                for area in REQUIRED
+            }
+            for result in payload.values():
+                self.runtime.record_sync_part(sync_id, result)
+            return self.runtime.commit_full_sync(sync_id, payload, REQUIRED)
+
+        submit_bridge = FakeBridge(
+            {
+                "readSavedSbcSquad": browser_challenge(
+                    item_ids, player_count=3
+                ),
+                "submitSbc": {"submitted_item_ids": item_ids, "success": True},
+                "readSbcSubmissionState": submission_state(
+                    1, player_count=3
+                ),
+            }
+        )
+        submitted = self.execute(
+            "submit_sbc", submit_bridge, sync_full, "partial-submit"
+        )
+        self.assertEqual(submitted["batch"]["status"], "complete")
+        submit_call = next(
+            params for method, params in submit_bridge.calls if method == "submitSbc"
+        )
+        self.assertEqual(submit_call["item_ids"], item_ids)
 
     def test_submit_requires_positive_ea_eligibility_readback(self):
         self.runtime.update_sbc_solution_status(

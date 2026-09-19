@@ -1,6 +1,6 @@
 # Architecture
 
-Date: 2026-09-18
+Date: 2026-09-19
 
 ```text
 OpenClaw
@@ -14,7 +14,7 @@ fc27d
   ├── Account module ── Chrome bridge ── EA Web App
   ├── Market module ── reference prices + EA scans
   ├── Content module ── EA account content + FUT.GG public evolutions
-  ├── SBC module ── requirements + deterministic validation
+  ├── SBC module ── requirements + CP-SAT optimization + independent validation
   ├── Execution module ── policy + idempotency + readback
   └── runtime.sqlite per Persona
 ```
@@ -29,7 +29,7 @@ fc27d
 
 `ContentModule` normalizes objective groups/tasks, account evolution slots, FUT.GG public evolutions and SBC summaries behind one discovery interface.
 
-`SbcModule` owns captured requirement normalization, candidate generation and validation. The Agent selects which solution to use.
+`SbcModule` owns captured requirement normalization, EA-native fillable field-slot layouts, Agent-required exact item constraints, bounded OR-Tools CP-SAT optimization, solution persistence and independent validation. Its interface remains one `sbc_solve` operation; model construction, objective scaling, no-good cuts and status mapping stay inside the module. The Agent selects which candidate to use.
 
 `ExecutionModule` receives exact actions. It enforces policy, stale-state checks, idempotency and post-operation readback.
 

@@ -409,13 +409,16 @@ class ExecutionService:
             normalized["set_id"] = str(normalized["set_id"])
             normalized["challenge_id"] = str(normalized["challenge_id"])
             item_ids = normalized.get("item_ids")
-            if not isinstance(item_ids, list) or len(item_ids) != 11:
-                raise FC27Error("INVALID_ACTION", f"{action_type} requires exactly 11 ordered item_ids.")
+            if not isinstance(item_ids, list) or not 1 <= len(item_ids) <= 11:
+                raise FC27Error(
+                    "INVALID_ACTION",
+                    f"{action_type} requires between 1 and 11 ordered item_ids.",
+                )
             try:
                 normalized["item_ids"] = [int(value) for value in item_ids]
             except (TypeError, ValueError) as error:
                 raise FC27Error("INVALID_ACTION", "SBC item_ids must be integers.") from error
-            if len(set(normalized["item_ids"])) != 11:
+            if len(set(normalized["item_ids"])) != len(normalized["item_ids"]):
                 raise FC27Error("INVALID_ACTION", "SBC item_ids must be unique.")
         return normalized
 
