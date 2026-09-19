@@ -8,9 +8,11 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from .bridge import BrowserBridge
+from .auto_sync import AutoSyncCoordinator
 from .account import AccountReader
 from .actions import ActionDispatcher
 from .catalog import CatalogDB
+from .content import ContentService, FutggContentClient
 from .errors import FC27Error
 from .execution import ExecutionService
 from .mcp import MCPServer
@@ -21,6 +23,7 @@ from .sbc import SbcService
 
 
 MAX_REQUEST_BYTES = 1024 * 1024
+BROWSER_POLL_SECONDS = 10
 
 
 def utc_now():
@@ -44,9 +47,12 @@ class FC27Daemon:
         )
         project_root = Path(__file__).resolve().parents[1]
         self.policy = PolicyStore(policy_path or project_root / "policy.json")
+        self.content = ContentService()
+        self.futgg_content = FutggContentClient()
         self.mcp = MCPServer(self)
         self._catalog_refresh_lock = threading.Lock()
         self._execution_lock = threading.Lock()
+        self.auto_sync = AutoSyncCoordinator(self._sync_full, self._execution_lock)
 
     def health(self):
         catalog_validation = self.catalog.validate()
@@ -56,8 +62,12 @@ class FC27Daemon:
             "catalog": catalog_validation,
             "catalog_meta": self.catalog.metadata(),
             "browser_bridge": self.bridge.health(),
+            "auto_sync": self.auto_sync.health(),
             "account": self.accounts.status(),
         }
+
+    def browser_event(self, event):
+        return self.auto_sync.accept(event)
 
     def rpc(self, request):
         method = request.get("method")
@@ -303,6 +313,50 @@ class FC27Daemon:
                 for card in data["cards"]:
                     card["catalog"] = catalog_by_id.get(card["card_ea_id"])
                 return self._envelope("futgg", data)
+            if name == "content_query":
+                options = self.content.validate_arguments(arguments)
+                content_type = options["content_type"]
+                source = options["source"]
+                if source == "futgg" and content_type != "evolution":
+                    raise FC27Error(
+                        "CONTENT_SOURCE_UNAVAILABLE",
+                        "FUT.GG currently exposes a stable manifest dataset for evolutions only.",
+                        recovery="Use source=ea for objective or SBC account content.",
+                    )
+                if source == "futgg":
+                    raw = self.futgg_content.evolutions(options["scope"])
+                    return self._envelope(
+                        "futgg",
+                        self.content.normalize_futgg_evolutions(raw, options),
+                    )
+                if self.bridge.health()["connected"]:
+                    method = {
+                        "objective": "getObjectives",
+                        "evolution": "getEvolutions",
+                        "sbc": "getSbcSets",
+                    }[content_type]
+                    try:
+                        raw = self._browser_tool(method, {})
+                    except FC27Error:
+                        if source != "auto" or content_type != "evolution":
+                            raise
+                    else:
+                        return self._envelope(
+                            "ea_webapp",
+                            self.content.normalize_ea(content_type, raw, options),
+                        )
+                if source == "auto" and content_type == "evolution":
+                    raw = self.futgg_content.evolutions(options["scope"])
+                    return self._envelope(
+                        "futgg",
+                        self.content.normalize_futgg_evolutions(raw, options),
+                    )
+                raise FC27Error(
+                    "EA_SESSION_REQUIRED",
+                    "An authenticated FC27 Web App session is required for this account content.",
+                    retryable=True,
+                    recovery="Open the FC27 Web App and sign in; the extension connects automatically.",
+                )
             if name == "sbc_solve":
                 if not self.accounts.active:
                     raise FC27Error(
@@ -378,6 +432,7 @@ class FC27Daemon:
             runtime.fail_sync(sync_id, error)
             raise
         reconciled_actions = runtime.reconcile_listing_actions()
+        self.auto_sync.note_full_sync()
         return {
             "account": runtime.account_summary(),
             "reconciled_actions": reconciled_actions,
@@ -472,17 +527,22 @@ class FC27RequestHandler(BaseHTTPRequestHandler):
                 self._json(200, self.server.fc27.health())
                 return
             if path == "/browser/poll":
-                envelope = self.server.fc27.bridge.poll()
+                envelope = self.server.fc27.bridge.poll(BROWSER_POLL_SECONDS)
                 if envelope is None:
                     self.send_response(204)
                     self.send_header("Cache-Control", "no-store")
                     self.end_headers()
                 else:
-                    self._json(200, envelope)
+                    try:
+                        self._json(200, envelope)
+                    except (BrokenPipeError, ConnectionResetError):
+                        self.server.fc27.bridge.requeue(envelope)
                 return
             self._json(404, {"ok": False, "error": {"code": "NOT_FOUND"}})
         except FC27Error as error:
             self._json(503, {"ok": False, "error": error.as_dict()})
+        except (BrokenPipeError, ConnectionResetError):
+            return
         except Exception:
             self._internal_error()
 
@@ -499,6 +559,10 @@ class FC27RequestHandler(BaseHTTPRequestHandler):
                         "The bridge request is unknown or already expired.",
                     )
                 self._json(200, {"ok": True})
+                return
+            if self.path == "/browser/event":
+                result = self.server.fc27.browser_event(payload)
+                self._json(202, {"ok": True, "data": result})
                 return
             if self.path == "/rpc":
                 self._json(200, {"ok": True, "data": self.server.fc27.rpc(payload)})
@@ -517,6 +581,8 @@ class FC27RequestHandler(BaseHTTPRequestHandler):
                     "error": {"code": "INVALID_JSON", "message": str(error), "retryable": False},
                 },
             )
+        except (BrokenPipeError, ConnectionResetError):
+            return
         except Exception:
             self._internal_error()
 

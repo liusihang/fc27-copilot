@@ -17,3 +17,6 @@ code { color: #d7e2f0; font-size: 11px; overflow-wrap: anywhere; text-align: rig
 .warning { color: #d6bd83; font-size: 11px; line-height: 1.45; margin-bottom: 0; }
 .error { color: #ffb1bb; font-size: 11px; line-height: 1.4; overflow-wrap: anywhere; }
 button { width: 100%; border: 0; border-radius: 8px; padding: 10px; font-weight: 700; background: #edf2f8; color: #101217; cursor: pointer; }
+label { display: block; color: #aeb6c2; font-size: 12px; margin: 10px 0 5px; }
+input { width: 100%; box-sizing: border-box; border: 1px solid #3b424d; border-radius: 8px; padding: 9px; background: #111318; color: #f4f5f7; font: inherit; font-size: 12px; }
+button.secondary { margin-top: 8px; background: #2b3340; color: #edf2f8; }

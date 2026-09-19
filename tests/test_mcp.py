@@ -37,6 +37,31 @@ class IdentityBridge:
                 "gameVersion": "fc27",
                 "capturedAt": "2026-09-18T13:00:00Z",
             },
+            "getObjectives": {
+                "status": 200,
+                "categories": [
+                    {
+                        "id": 1,
+                        "name": "Seasonal",
+                        "groups": [
+                            {
+                                "id": 2,
+                                "title": "Starter",
+                                "completed": False,
+                                "tasks": [{"id": 3, "title": "Play one match"}],
+                            }
+                        ],
+                    }
+                ],
+            },
+            "getEvolutions": {
+                "status": 200,
+                "evolutions": [{"id": 10, "name": "Intro", "completed": False, "levels": []}],
+            },
+            "getSbcSets": {
+                "status": 200,
+                "sets": [{"id": 4, "name": "Bronze Upgrade", "completed": False}],
+            },
         }
         if method not in payloads:
             raise AssertionError(method)
@@ -99,12 +124,13 @@ class MCPTest(unittest.TestCase):
         self.daemon = FC27Daemon(catalog_path, web_root, policy_path=policy_path)
 
     def tearDown(self):
+        self.daemon.auto_sync.stop()
         self.directory.cleanup()
 
     def test_tools_list_contains_exact_catalog(self):
         response = self.daemon.mcp.handle({"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}})
         names = [tool["name"] for tool in response["result"]["tools"]]
-        self.assertEqual(len(TOOLS), 10)
+        self.assertEqual(len(TOOLS), 11)
         self.assertEqual(names, [tool["name"] for tool in TOOLS])
 
     def test_catalog_query_returns_uniform_envelope(self):
@@ -140,6 +166,48 @@ class MCPTest(unittest.TestCase):
         self.assertNotIn("sid", result["data"]["ea_session"])
         self.assertEqual(result["data"]["policy"]["execution_mode"], "observe")
         self.assertFalse(result["data"]["policy"]["account_writes_enabled"])
+
+    def test_content_query_reads_account_objectives(self):
+        self.daemon.bridge = IdentityBridge()
+        result = self.daemon.call_tool(
+            "content_query",
+            {
+                "content_type": "objective",
+                "source": "ea",
+                "detail": "detailed",
+            },
+        )
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["data"]["source"], "ea")
+        self.assertEqual(result["data"]["items"][0]["title"], "Starter")
+        self.assertEqual(result["data"]["items"][0]["tasks"][0]["id"], 3)
+
+    def test_content_query_uses_futgg_evolutions_without_account(self):
+        class FixtureContentClient:
+            def evolutions(self, scope):
+                return {
+                    "manifest_version": 1,
+                    "manifest_key": "active-evolutions",
+                    "manifest_hash": "hash",
+                    "evolutions": [{"id": 10, "name": "Intro", "expired": False, "levels": []}],
+                }
+
+        self.daemon.futgg_content = FixtureContentClient()
+        result = self.daemon.call_tool(
+            "content_query",
+            {"content_type": "evolution", "source": "auto"},
+        )
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["meta"]["source"], "futgg")
+        self.assertEqual(result["data"]["items"][0]["name"], "Intro")
+
+    def test_content_query_rejects_futgg_objectives(self):
+        result = self.daemon.call_tool(
+            "content_query",
+            {"content_type": "objective", "source": "futgg"},
+        )
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error"]["code"], "CONTENT_SOURCE_UNAVAILABLE")
 
     def test_rpc_does_not_expose_raw_browser_methods(self):
         bridge = ReconciliationBridge({"success": True})

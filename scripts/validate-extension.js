@@ -21,6 +21,9 @@ const manifestPath = path.join(extension, 'manifest.json');
 const manifest = JSON.parse(await fs.readFile(manifestPath, 'utf8'));
 if (!manifest.name?.includes('FC27')) errors.push('manifest name is not FC27');
 if (!manifest.host_permissions?.includes('https://*.ea.com/*')) errors.push('dynamic EA subdomain host permission missing');
+if (!manifest.host_permissions?.includes('http://127.0.0.1/*')) errors.push('loopback fc27d host permission missing');
+if (!manifest.host_permissions?.includes('http://localhost/*')) errors.push('localhost fc27d host permission missing');
+if (manifest.externally_connectable) errors.push('manual externally_connectable bridge must be removed');
 if (manifest.permissions?.includes('alarms')) errors.push('thin bridge must not own keepalive scheduling');
 
 const files = await walk(extension);
@@ -46,14 +49,26 @@ for (const relative of obsolete) {
 }
 
 const worker = await fs.readFile(path.join(extension, 'background', 'service-worker.js'), 'utf8');
-if (!worker.includes('FC27_DAEMON_CALL')) errors.push('daemon bridge message handler missing');
-if (!worker.includes('http://127.0.0.1:3926')) errors.push('loopback daemon origin check missing');
+if (!worker.includes("FC27_BRIDGE_POLL")) errors.push('content-driven daemon poll handler missing');
+if (worker.includes('onMessageExternal')) errors.push('legacy external bridge handler still exists');
 if (worker.includes('writeToolsEnabled')) errors.push('extension still contains account policy state');
+
+const daemonBridge = await fs.readFile(path.join(extension, 'background', 'daemon.js'), 'utf8');
+if (!daemonBridge.includes('/browser/poll')) errors.push('direct daemon poll missing');
+if (!daemonBridge.includes('/browser/respond')) errors.push('direct daemon response forwarding missing');
+if (!daemonBridge.includes('/browser/event')) errors.push('browser event delivery missing');
+
+const contentScript = await fs.readFile(path.join(extension, 'content', 'content-script.js'), 'utf8');
+if (!contentScript.includes("type: 'FC27_BRIDGE_POLL'")) errors.push('Web App-driven daemon polling missing');
 
 const pageInject = await fs.readFile(path.join(extension, 'content', 'page-inject.js'), 'utf8');
 if (!pageInject.includes('const savedIds = savedSbcItemIds(squad);')) {
   errors.push('SBC submit must reuse the positive-item saved squad filter');
 }
+if (!pageInject.includes("type: 'FC27_ACCOUNT_CHANGED'")) errors.push('account-change observation missing');
+if (!pageInject.includes('async getObjectives()')) errors.push('objective reader missing');
+if (!pageInject.includes('async getEvolutions()')) errors.push('evolution reader missing');
+if (!pageInject.includes('requestSlotsByCategory')) errors.push('available evolution category reader missing');
 
 for (const file of files.filter((f) => f.endsWith('.js') && !f.endsWith('content/page-inject.js'))) {
   const text = await fs.readFile(file, 'utf8');

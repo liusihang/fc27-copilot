@@ -39,6 +39,24 @@ class BrowserBridgeTest(unittest.TestCase):
         self.assertEqual(bridge.health()["pending_requests"], 0)
         self.assertIsNone(bridge.poll(0.01))
 
+    def test_disconnected_poll_response_can_requeue_request(self):
+        bridge = BrowserBridge()
+        bridge.mark_connected()
+        result = {}
+
+        def caller():
+            result["value"] = bridge.call("getIdentity", {}, 2)
+
+        thread = threading.Thread(target=caller)
+        thread.start()
+        first = bridge.poll(1)
+        self.assertTrue(bridge.requeue(first))
+        second = bridge.poll(1)
+        self.assertEqual(second, first)
+        self.assertTrue(bridge.respond(second["request_id"], {"ok": True}))
+        thread.join(2)
+        self.assertEqual(result["value"], {"ok": True})
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -9,7 +9,7 @@
 <body>
   <main>
     <h1>FC27 Copilot <span>Bridge</span></h1>
-    <p class="sub">Session status only. Strategy, policy, persistence, and MCP run in fc27d.</p>
+    <p class="sub">Open the FC27 Web App and sign in. The extension connects to fc27d and synchronizes your club automatically.</p>
 
     <section>
       <div class="row"><b>Web App</b><span id="webapp" class="badge">Checking</span></div>
@@ -22,11 +22,15 @@
     </section>
 
     <section>
-      <div class="row"><b>fc27d bridge</b><span>127.0.0.1:3926</span></div>
+      <div class="row"><b>fc27d</b><span id="daemon" class="badge">Checking</span></div>
+      <div class="kv"><span>Auto sync</span><code id="autoSync">—</code></div>
+      <label for="serverUrl">FC27 server</label>
+      <input id="serverUrl" type="url" spellcheck="false" value="http://127.0.0.1:3926" />
+      <button id="saveServer" class="secondary">Save server address</button>
       <div id="lastError" class="error"></div>
     </section>
 
-    <button id="refresh">Refresh</button>
+    <button id="refresh">Refresh status</button>
   </main>
   <script src="popup.js"></script>
 </body>

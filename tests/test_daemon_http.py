@@ -45,6 +45,7 @@ class DaemonHTTPTest(unittest.TestCase):
         self.base_url = f"http://127.0.0.1:{self.server.server_address[1]}"
 
     def tearDown(self):
+        self.server.fc27.auto_sync.stop()
         self.server.shutdown()
         self.server.server_close()
         self.thread.join(2)
@@ -64,6 +65,26 @@ class DaemonHTTPTest(unittest.TestCase):
             result = json.load(response)
         self.assertTrue(result["ok"])
         self.assertEqual(result["data"]["cards"][0]["card_ea_id"], 200)
+
+    def test_browser_event_endpoint_accepts_public_session_state(self):
+        request = Request(
+            f"{self.base_url}/browser/event",
+            method="POST",
+            headers={"Content-Type": "application/json"},
+            data=json.dumps(
+                {
+                    "event_id": "session-1",
+                    "type": "session_authenticated",
+                    "observed_at": "2026-09-19T00:00:00Z",
+                    "data": {"authenticated": False},
+                }
+            ).encode(),
+        )
+        with urlopen(request, timeout=2) as response:
+            result = json.load(response)
+            self.assertEqual(response.status, 202)
+        self.assertTrue(result["ok"])
+        self.assertFalse(result["data"]["scheduled"])
 
 
 if __name__ == "__main__":

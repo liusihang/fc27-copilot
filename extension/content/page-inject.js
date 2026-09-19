@@ -72,6 +72,28 @@
     }, '*');
   }
 
+  function announceAccountChange(rawUrl, method, status) {
+    const normalizedMethod = String(method || 'GET').toUpperCase();
+    if (normalizedMethod === 'GET' || normalizedMethod === 'HEAD') return;
+    if (Number(status) < 200 || Number(status) >= 300) return;
+    if (!detectApiBase(rawUrl)) return;
+    let path;
+    try { path = new URL(rawUrl, window.location.href).pathname; }
+    catch { return; }
+    const mutationPaths = ['/auctionhouse', '/item', '/tradepile', '/sbs/', '/packs/', '/scmp/', '/academy/'];
+    if (!mutationPaths.some((value) => path.includes(value))) return;
+    window.postMessage({
+      source: SOURCE_PAGE,
+      type: 'FC27_ACCOUNT_CHANGED',
+      change: {
+        method: normalizedMethod,
+        path,
+        status: Number(status),
+        observed_at: new Date().toISOString(),
+      },
+    }, '*');
+  }
+
   function normalizeHeaders(headersLike) {
     const headers = new Map();
     if (!headersLike) return headers;
@@ -120,8 +142,9 @@
   function observeFetch() {
     const original = window.fetch.bind(window);
     window.fetch = function fc27ObservedFetch(input, init = {}) {
+      const url = typeof input === 'string' || input instanceof URL ? String(input) : input?.url;
+      const method = String(init.method || (input instanceof Request ? input.method : 'GET')).toUpperCase();
       try {
-        const url = typeof input === 'string' || input instanceof URL ? String(input) : input?.url;
         const baseHeaders = input instanceof Request ? input.headers : undefined;
         const merged = new Headers(baseHeaders || {});
         new Headers(init.headers || {}).forEach((value, key) => merged.set(key, value));
@@ -129,7 +152,11 @@
       } catch {
         // Observation failures must never break the EA web app request.
       }
-      return original(input, init);
+      return original(input, init).then((response) => {
+        try { announceAccountChange(url, method, response.status); }
+        catch { /* Observation failures must never break the EA web app response. */ }
+        return response;
+      });
     };
   }
 
@@ -140,7 +167,9 @@
 
     XMLHttpRequest.prototype.open = function fc27Open(method, url, ...rest) {
       this.__fc27Url = url;
+      this.__fc27Method = String(method || 'GET').toUpperCase();
       this.__fc27Headers = {};
+      this.__fc27ChangeObserved = false;
       return originalOpen.call(this, method, url, ...rest);
     };
 
@@ -158,6 +187,13 @@
     XMLHttpRequest.prototype.send = function fc27Send(...args) {
       try {
         capture(this.__fc27Url, this.__fc27Headers || {});
+        if (!this.__fc27ChangeObserved) {
+          this.__fc27ChangeObserved = true;
+          this.addEventListener('loadend', () => {
+            try { announceAccountChange(this.__fc27Url, this.__fc27Method, this.status); }
+            catch { /* No-op. */ }
+          }, { once: true });
+        }
       } catch {
         // No-op.
       }
@@ -274,6 +310,115 @@
       if (Array.isArray(value)) return value;
     }
     return [];
+  }
+
+  function collectionValues(value) {
+    if (Array.isArray(value)) return value;
+    if (typeof value?.values === 'function') {
+      const values = value.values();
+      return Array.isArray(values) ? values : Array.from(values || []);
+    }
+    return [];
+  }
+
+  function plainObjectiveTask(task) {
+    const target = Number(readValue(task, ['multiplier', 'target', 'requiredProgress']) ?? 0);
+    const progress = Number(readValue(task, ['progress', '_progress', 'currentProgress']) ?? 0);
+    const redeemed = typeof task?.isRedeemed === 'function' ? Boolean(task.isRedeemed()) : null;
+    const completed = redeemed === true
+      || (typeof task?.isCompleted === 'function' && Boolean(task.isCompleted()))
+      || (target > 0 && progress >= target);
+    return {
+      id: readValue(task, ['id', 'objectiveId']),
+      title: readValue(task, ['title', 'name']),
+      description: readValue(task, ['description', 'desc']),
+      state: readValue(task, ['state', '_state']),
+      progress,
+      target,
+      completed,
+      redeemed,
+      claimable: typeof task?.isClaimable === 'function' ? Boolean(task.isClaimable()) : null,
+      rewards: plainValue(readValue(task, ['rewards', 'rewardSet']), 0, new WeakSet(), 8),
+    };
+  }
+
+  function plainObjectiveGroup(group) {
+    const tasks = collectionValues(
+      typeof group?.getObjectives === 'function' ? group.getObjectives() : group?.objectives
+    ).map(plainObjectiveTask);
+    const rawRequiredTasks = Number(readValue(group, ['requiredObjectivesCount', 'objectivesCompletionCount']) ?? 0);
+    const requiredTasks = rawRequiredTasks > 0 ? rawRequiredTasks : tasks.length;
+    const completedTasks = tasks.filter((task) => task.completed).length;
+    return {
+      id: readValue(group, ['id', 'groupId']),
+      composite_id: readValue(group, ['compositeId']),
+      title: readValue(group, ['title', 'name']),
+      subtitle: readValue(group, ['subtitle', 'subTitle']),
+      type: readValue(group, ['type', 'groupType']),
+      state: readValue(group, ['state', '_state', 'groupState']),
+      start_time: readValue(group, ['startTime']),
+      end_time: readValue(group, ['endTime']),
+      repeatability_mode: readValue(group, ['repeatabilityMode']),
+      times_completed: readValue(group, ['timesCompleted']),
+      required_tasks: requiredTasks,
+      completed_tasks: completedTasks,
+      completed: typeof group?.isCompleted === 'function'
+        ? Boolean(group.isCompleted())
+        : requiredTasks > 0 && completedTasks >= requiredTasks,
+      claimable: typeof group?.isClaimable === 'function' ? Boolean(group.isClaimable()) : null,
+      tasks,
+      rewards: plainValue(readValue(group, ['rewards', 'rewardSet']), 0, new WeakSet(), 8),
+    };
+  }
+
+  function plainObjectiveCategory(category) {
+    return {
+      id: readValue(category, ['id', 'categoryId']),
+      name: readValue(category, ['name', 'title']),
+      priority: readValue(category, ['priority']),
+      groups: collectionValues(
+        typeof category?.getGroups === 'function' ? category.getGroups() : category?.groups
+      ).map(plainObjectiveGroup),
+    };
+  }
+
+  function plainEvolutionSlot(slot, category = null) {
+    const levels = collectionValues(slot?.levels).map((level) => ({
+      id: readValue(level, ['id', 'levelId']),
+      name: readValue(level, ['name', 'title']),
+      state: readValue(level, ['state', '_state', 'status']),
+      completed: typeof level?.isComplete === 'function' ? Boolean(level.isComplete()) : null,
+      claimable: typeof level?.isClaimable === 'function' ? Boolean(level.isClaimable()) : null,
+      objectives: collectionValues(level?.objectives).map(plainObjectiveTask),
+      rewards: plainValue(readValue(level, ['awards', 'rewards']), 0, new WeakSet(), 8),
+    }));
+    const player = readValue(slot, ['player']);
+    const completed = typeof slot?.isSlotComplete === 'function'
+      ? Boolean(slot.isSlotComplete())
+      : levels.length > 0 && levels.every((level) => level.completed === true);
+    return {
+      id: readValue(slot, ['id', 'slotId']),
+      name: readValue(slot, ['slotName', 'name', 'title']),
+      description: readValue(slot, ['slotDescription', 'description']),
+      category_id: readValue(slot, ['categoryId']),
+      category_name: readValue(category, ['description', 'name']),
+      status: readValue(slot, ['status', '_status']),
+      timed: Boolean(readValue(slot, ['timed'])),
+      enrollment_end_time: readValue(slot, ['endTimePurchaseVisibility']),
+      end_time: readValue(slot, ['endTime']),
+      repeatability_count: readValue(slot, ['numberOfRepetitions']),
+      remaining_repetitions: typeof slot?.getRemainingRepetitions === 'function'
+        ? slot.getRemainingRepetitions()
+        : null,
+      active: typeof slot?.isActive === 'function' ? Boolean(slot.isActive()) : null,
+      started: typeof slot?.isStarted === 'function' ? Boolean(slot.isStarted()) : null,
+      claimable: typeof slot?.isClaimable === 'function' ? Boolean(slot.isClaimable()) : null,
+      completed,
+      player: typeof player?.isValid === 'function' && player.isValid() ? serializeItem(player) : null,
+      requirements: plainValue(readValue(slot, ['eligibilityRequirements']), 0, new WeakSet(), 8),
+      prices: plainValue(readValue(slot, ['prices']), 0, new WeakSet(), 6),
+      levels,
+    };
   }
 
   function plainSbcSet(set) {
@@ -482,6 +627,77 @@
       appServices,
       status: response.status ?? null,
       sets: Array.isArray(payload.sets) ? payload.sets : Array.isArray(payload) ? payload : [],
+    };
+  }
+
+  async function loadObjectives() {
+    const appServices = requireWebAppServices();
+    appServices.Objectives.flushCategoryCache?.();
+    const response = await observeOnce(appServices.Objectives.requestCategories());
+    const payload = response.data ?? response.response ?? {};
+    return {
+      categories: collectionValues(payload.categories ?? payload).map(plainObjectiveCategory),
+      status: response.status ?? null,
+    };
+  }
+
+  async function loadEvolutionSlots() {
+    const appServices = requireWebAppServices();
+    if (!appServices.Academy?.isFeatureEnabled?.()) {
+      throw Object.assign(new Error('FC27 Evolutions are not enabled for this account.'), { code: 'EA_EVOLUTIONS_DISABLED' });
+    }
+    appServices.Academy.reset?.();
+    const states = globalThis.AcademySlotState || {};
+    const requestedStates = [states.NOT_STARTED, states.STARTED].filter((value, index, values) => (
+      value !== undefined && value !== null && values.indexOf(value) === index
+    ));
+    if (!requestedStates.length) requestedStates.push(null);
+    const byId = new Map();
+    const categoriesById = new Map();
+    let status = null;
+    for (const slotStatus of requestedStates) {
+      const response = await observeOnce(appServices.Academy.requestAcademyHub({
+        count: 100,
+        offset: 0,
+        sort: 0,
+        slotStatus,
+        forceFetch: true,
+      }));
+      status = response.status ?? status;
+      const payload = response.data ?? response.response ?? {};
+      for (const category of collectionValues(payload.categories)) {
+        categoriesById.set(String(readValue(category, ['id', 'categoryId'])), category);
+      }
+      for (const slot of [...collectionValues(payload.slots), ...collectionValues(payload.temporarySlots)]) {
+        const category = categoriesById.get(String(readValue(slot, ['categoryId'])));
+        const normalized = plainEvolutionSlot(slot, category);
+        byId.set(String(normalized.id), normalized);
+      }
+    }
+    for (const category of categoriesById.values()) {
+      const categoryId = readValue(category, ['id', 'categoryId']);
+      const response = await observeOnce(appServices.Academy.requestSlotsByCategory({
+        categoryId,
+        count: 100,
+        offset: 0,
+        sort: 0,
+        forceFetch: true,
+      }));
+      status = response.status ?? status;
+      const payload = response.data ?? response.response ?? {};
+      for (const slot of collectionValues(payload.slots)) {
+        const normalized = plainEvolutionSlot(slot, category);
+        byId.set(String(normalized.id), normalized);
+      }
+    }
+    return {
+      evolutions: Array.from(byId.values()),
+      categories: Array.from(categoriesById.values()).map((category) => ({
+        id: readValue(category, ['id', 'categoryId']),
+        name: readValue(category, ['description', 'name']),
+        count: readValue(category, ['count']),
+      })),
+      status,
     };
   }
 
@@ -783,6 +999,14 @@
       const appServices = requireWebAppServices();
       const response = await observeOnce(appServices.Item.requestWatchedItems());
       return { auctionInfo: resultItems(response).map(serializeAuction), status: response.status ?? null };
+    },
+
+    async getObjectives() {
+      return loadObjectives();
+    },
+
+    async getEvolutions() {
+      return loadEvolutionSlots();
     },
 
     async relistAll() {

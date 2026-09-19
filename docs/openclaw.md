@@ -1,6 +1,6 @@
 # OpenClaw integration
 
-Verified locally on 2026-09-18 with OpenClaw `2026.9.4 (3a9d69d)`.
+Verified locally on 2026-09-19 with OpenClaw `2026.9.4 (3a9d69d)`.
 
 ## fc27d service
 
@@ -41,7 +41,7 @@ openclaw mcp probe FC27
 
 ## Accepted result
 
-- OpenClaw discovered exactly 10 FC27 tools.
+- OpenClaw discovers 11 FC27 tools, including `content_query`.
 - `fc27d` survived a forced LaunchAgent restart and returned 19,676 cards afterward.
 - The existing `fc-expert` Agent called `fc27__catalog_query` successfully.
 - Query `card_ea_id=231747` returned Kylian Mbappé, overall 91, primary position ST.

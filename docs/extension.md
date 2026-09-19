@@ -13,13 +13,21 @@ Load `/absolute/path/Documents/fc27-copilot/dist` as an unpacked extension from 
 
 ## Connection flow
 
-1. Start `python3 fc27d.py`.
-2. Open `http://127.0.0.1:3926` in the same Chrome profile.
-3. Paste the unpacked extension ID into the bridge page.
-4. Open the FC27 Ultimate Team Web App.
-5. The page adapter observes the Web App's own FC27 UTAS requests and captures the current API base and session headers.
+1. Keep `fc27d` installed as the macOS LaunchAgent or start `python3 fc27d.py`.
+2. Load `/absolute/path/Documents/fc27-copilot/dist` as an unpacked extension once.
+3. Open the FC27 Ultimate Team Web App and sign in.
 
-The bridge page only receives structured call results. Raw `X-UT-SID` and `X-UT-PHISHING-TOKEN` values stay inside the injected page-script closure and are never written to Chrome storage, fc27d, SQLite, logs, or MCP output.
+The Web App content script drives one bounded localhost long poll at a time, so Manifest V3 may suspend and resume the service worker without losing the bridge. The default FC27 server is `http://127.0.0.1:3926`. The popup exposes one optional loopback-address field when a different local port is required.
+
+No localhost bridge page or extension ID is required. Raw `X-UT-SID` and `X-UT-PHISHING-TOKEN` values stay inside the injected page-script closure and are never written to Chrome storage, fc27d, SQLite, logs, or MCP output.
+
+## Automatic synchronization
+
+- A new authenticated session schedules a complete club synchronization after Web App services initialize.
+- Successful EA writes under account mutation paths schedule one debounced synchronization.
+- Login synchronization retries retryable service-readiness errors at most three times.
+- A complete explicit post-action synchronization suppresses a redundant event-triggered run.
+- Browser request delivery is requeued when the long-poll HTTP connection closes before the daemon writes the response.
 
 ## Responsibilities
 
@@ -30,9 +38,10 @@ The extension owns:
 - selected Persona/club identity reads;
 - structured EA request execution;
 - public connection/session status.
+- direct localhost polling and public change-event delivery.
 
 `fc27d` owns rate limits, policy, persistence, idempotency, synchronization, readback, and MCP. OpenClaw owns strategy decisions.
 
 ## Current acceptance boundary
 
-Static validation and the unpacked build pass without an EA account. The first live acceptance remains GitHub Issue #12 and requires the user to log in. That test is read-only.
+Version `0.5.0` passed direct-connection, login automatic synchronization, objective, evolution, and SBC read-only acceptance on 2026-09-19. Account writes remain governed by `policy.json` and were not used during this acceptance.

@@ -2,7 +2,7 @@
 
 本项目把 FC27 Web App 会话桥接、FUT.GG 球员目录与价格数据、本地俱乐部镜像和 OpenClaw MCP 整合为一个本地系统。
 
-当前状态：M1–M5 已完成；M6 已完成 SBC 实时结构捕获、本地候选求解以及保存/提交接口的 fixture 验证。真实 SBC 保存与提交等待精确球员清单确认；系统仍运行在逐批确认的 `suggest` 模式，`auto` 模式关闭。
+当前状态：M1–M6 已完成并通过真实账户验收。扩展安装后会直接连接本机 `fc27d`；打开并登录 FC27 Web App 后自动同步俱乐部。任务、账户进化、FUT.GG 公共进化和 SBC 列表可通过统一 MCP 查询。系统仍运行在逐批确认的 `suggest` 模式，`auto` 模式关闭。
 
 ## 设计边界
 
@@ -12,6 +12,8 @@
 - Chrome 扩展只捕获当前 Web App 会话并调用 EA 页面能力。
 - 原始 SID 和 phishing token 只保留在页面内存中。
 - `policy.json` 是唯一执行授权面；当前 `suggest` 模式要求每批操作携带 `confirmed=true`。
+- 扩展默认连接 `http://127.0.0.1:3926`，只在需要修改本机端口时设置一次 FC27 server 地址。
+- 登录、切换会话和成功的俱乐部物品写操作会触发有界、去重的完整俱乐部同步。
 
 ## 数据库
 
@@ -28,6 +30,7 @@
 - [执行策略](docs/execution-policy.md)
 - [M5 真实账户验收](docs/live-execution-acceptance-2026-09-18.md)
 - [SBC 契约](docs/sbc-contract.md)
+- [零配置与内容查询验收](docs/zero-config-content-acceptance-2026-09-19.md)
 - [SBC 只读与本地求解验收](docs/sbc-read-only-acceptance-2026-09-18.md)
 - [来源清单](docs/source-artifacts.md)
 - [交接记录](handoff.md)
@@ -61,7 +64,7 @@ python3 fc27d.py
 python3 mcp_stdio.py
 ```
 
-The MCP server name is `FC27` and exposes exactly ten tools documented in [MCP contract](docs/mcp-contract.md). Start `fc27d.py` before launching the stdio adapter.
+The MCP server name is `FC27` and exposes eleven tools documented in [MCP contract](docs/mcp-contract.md). Start `fc27d.py` before launching the stdio adapter.
 
 macOS 常驻服务和 OpenClaw 注册步骤见 [OpenClaw 集成](docs/openclaw.md)。
 

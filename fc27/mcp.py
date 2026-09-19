@@ -1,7 +1,7 @@
 import json
 
 
-SERVER_VERSION = "0.4.0"
+SERVER_VERSION = "0.5.0"
 
 
 def object_schema(properties, required=()):
@@ -83,6 +83,12 @@ TOOLS = [
         "name": "price_context",
         "description": "Return FUT.GG prices, local price history, EA scan history, holdings, costs, tax, and deterministic net results for explicit card IDs.",
         "inputSchema": object_schema({"card_ea_ids": {"type": "array", "items": {"type": "integer"}, "minItems": 1, "maxItems": 100}, "history_hours": {"type": "integer", "minimum": 1, "maximum": 2160, "default": 72}}, ["card_ea_ids"]),
+        "annotations": {"readOnlyHint": True, "destructiveHint": False, "idempotentHint": False, "openWorldHint": True},
+    },
+    {
+        "name": "content_query",
+        "description": "Discover current FC27 objective groups, evolution slots, or SBC sets. Use source=ea for account progress, source=futgg for public evolution data, or source=auto to prefer EA and use FUT.GG evolutions when the Web App is unavailable. Summary mode returns bounded list facts; detailed mode includes objective tasks or evolution levels. Use sbc_query instead when exact SBC requirements, persistence, solving, save, or submit evidence is needed.",
+        "inputSchema": object_schema({"content_type": {"type": "string", "enum": ["objective", "evolution", "sbc"]}, "source": {"type": "string", "enum": ["auto", "ea", "futgg"], "default": "auto"}, "scope": {"type": "string", "enum": ["active", "all"], "default": "active"}, "text": {"type": "string"}, "include_completed": {"type": "boolean", "default": False}, "detail": {"type": "string", "enum": ["summary", "detailed"], "default": "summary"}, "limit": {"type": "integer", "minimum": 1, "maximum": 200, "default": 50}}, ["content_type"]),
         "annotations": {"readOnlyHint": True, "destructiveHint": False, "idempotentHint": False, "openWorldHint": True},
     },
     {

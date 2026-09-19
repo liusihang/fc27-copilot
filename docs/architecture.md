@@ -13,6 +13,7 @@ fc27d
   ├── Catalog module ── FUT.GG ── catalog.sqlite
   ├── Account module ── Chrome bridge ── EA Web App
   ├── Market module ── reference prices + EA scans
+  ├── Content module ── EA account content + FUT.GG public evolutions
   ├── SBC module ── requirements + deterministic validation
   ├── Execution module ── policy + idempotency + readback
   └── runtime.sqlite per Persona
@@ -25,6 +26,8 @@ fc27d
 `AccountStateModule` owns identity selection, full/targeted synchronization and current owned-item state.
 
 `MarketModule` owns FUT.GG reference-price changes, EA market scan aggregates and deterministic fee/profit calculations.
+
+`ContentModule` normalizes objective groups/tasks, account evolution slots, FUT.GG public evolutions and SBC summaries behind one discovery interface.
 
 `SbcModule` owns captured requirement normalization, candidate generation and validation. The Agent selects which solution to use.
 
@@ -41,6 +44,10 @@ The supplied data uses FUT.GG `rarity_id=718` for Rare Gold, Rare Silver and Rar
 ## Agent/tool boundary
 
 The Agent decides targets, prices, priorities and whether a candidate is desirable. MCP returns facts, performs deterministic calculations, validates exact requests and executes authorized actions. No fixed trading strategy engine is part of the daemon.
+
+## Browser lifecycle
+
+The persistent Web App content script requests one bounded daemon poll through the extension service worker. This message-scoped request works with Manifest V3 suspension. `fc27d` requeues an exact pending request if the HTTP response connection closes before delivery. Public login and mutation events enter one daemon-owned synchronization coordinator that shares the execution lock with explicit actions.
 
 ## Live acceptance boundary
 

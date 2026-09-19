@@ -91,6 +91,19 @@ class BrowserBridge:
             pending.event.set()
             return True
 
+    def requeue(self, envelope):
+        request_id = envelope.get("request_id") if isinstance(envelope, dict) else None
+        if not request_id:
+            return False
+        with self._condition:
+            if request_id not in self._pending:
+                return False
+            if any(value.get("request_id") == request_id for value in self._queue):
+                return True
+            self._queue.appendleft(envelope)
+            self._condition.notify_all()
+            return True
+
     def mark_connected(self):
         with self._condition:
             self._browser_last_seen = time.time()

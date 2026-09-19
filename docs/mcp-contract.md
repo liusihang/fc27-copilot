@@ -1,6 +1,6 @@
 # FC27 MCP contract
 
-Date: 2026-09-18
+Date: 2026-09-19
 
 Server name: `FC27`
 
@@ -55,6 +55,8 @@ Failed calls return:
 
 Returns daemon/database health, browser bridge state, public EA session status, active Persona, coins, catalog metadata, latest complete sync, policy mode, and active rate-limit/backoff state. It never returns raw session headers.
 
+Status also returns automatic synchronization state: pending/running flags, triggering reason, bounded retry attempt, last event, last successful synchronization and last error.
+
 Input: empty object.
 
 ### `FC27:catalog_query`
@@ -96,6 +98,21 @@ Searches current EA listings for one explicit `card_ea_id` and bounded price ran
 
 Returns current and historical FUT.GG prices, EA scan history, holdings, listed count, recent acquisition costs, EA tax, and deterministic net-profit calculations for explicit card IDs.
 
+### `FC27:content_query`
+
+Discovers current objective groups, evolution slots, or SBC sets through one bounded list interface.
+
+- `content_type=objective`: EA account categories, groups, task progress and rewards.
+- `content_type=evolution`: EA account slots/progress or FUT.GG public evolution definitions.
+- `content_type=sbc`: EA account SBC set summaries.
+- `source=auto`: prefer EA account state; when the Web App is unavailable, public evolutions use FUT.GG.
+- `source=ea`: require the authenticated Web App.
+- `source=futgg`: currently available for evolutions through the content-hashed manifest dataset.
+- `detail=summary`: compact bounded facts.
+- `detail=detailed`: objective tasks or evolution levels, requirements and rewards.
+
+Use `sbc_query` when exact SBC requirements, persistence, solving, save or submission evidence is required.
+
 ### `FC27:sbc_query`
 
 Refreshes and persists live SBC sets/challenges or reads the local cache. It returns raw evidence, normalized constraints, formation slots, rewards, status, expiry, repeatability, observation time, and explicit unsupported-constraint reports.
@@ -133,7 +150,7 @@ Save and submit reconciliation are narrow localhost daemon RPCs, not additional 
 | `CATALOG_NOT_FOUND` | Local catalog has not been built. | Run `FC27:catalog_refresh` or the import script. |
 | `CATALOG_INVALID` | Integrity, mapping, or count validation failed. | Keep the active catalog and inspect validation details. |
 | `DAEMON_UNAVAILABLE` | MCP adapter cannot reach fc27d. | Start fc27d and retry. |
-| `BRIDGE_NOT_CONNECTED` | Local browser bridge page is not connected. | Open the bridge page and connect the extension. |
+| `BRIDGE_NOT_CONNECTED` | The extension is not polling the local daemon. | Open the FC27 Web App with the extension enabled. |
 | `EA_SESSION_REQUIRED` | FC27 session headers or API base are unavailable. | Log in and navigate within the FC27 Web App. |
 | `EA_VERIFICATION_REQUIRED` | EA returned a verification/captcha response. | Resolve it manually in the Web App. |
 | `EA_RATE_LIMITED` | EA returned 429 and local backoff is active. | Wait until `retry_after` and retry once. |
@@ -146,6 +163,7 @@ Save and submit reconciliation are narrow localhost daemon RPCs, not additional 
 | `IDEMPOTENCY_CONFLICT` | A key was reused with different parameters. | Use the recorded result or a new key for a different operation. |
 | `ITEM_NOT_FOUND` | Exact owned item is absent from current state. | Sync and choose an existing item ID. |
 | `TRADE_NOT_FOUND` | Exact market trade is no longer available. | Search again and choose a current trade ID. |
+| `CONTENT_SOURCE_UNAVAILABLE` | The selected provider does not expose that content type through a stable machine-readable dataset. | Use EA for objectives/SBCs or FUT.GG for evolutions. |
 | `SBC_SCHEMA_UNSUPPORTED` | Captured requirement type is not normalized. | Inspect raw evidence and implement that requirement before solving. |
 | `SBC_NOT_ELIGIBLE` | Saved squad fails local or EA validation. | Inspect failed constraints and rebuild the squad. |
 | `SBC_SUBMIT_ALREADY_ATTEMPTED` | The solution already has an active, completed, or unresolved submit. | Replay or reconcile the original action ID. |
@@ -156,4 +174,4 @@ Save and submit reconciliation are narrow localhost daemon RPCs, not additional 
 
 ## Tool-selection rule
 
-Catalog facts use `catalog_query`; owned-item state uses `club_query`; current listings use `market_search`; combined historical/economic context uses `price_context`. This division prevents overlapping tools from returning subtly different meanings for the same question.
+Catalog facts use `catalog_query`; owned-item state uses `club_query`; current listings use `market_search`; combined historical/economic context uses `price_context`; current objectives/evolutions/SBC discovery uses `content_query`; exact SBC constraints and workflows use `sbc_query`. This division prevents overlapping tools from returning subtly different meanings for the same question.
