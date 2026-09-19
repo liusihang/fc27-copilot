@@ -42,6 +42,7 @@ ERROR_SCHEMA = {
 }
 
 OUTPUT_SCHEMA = {
+    "type": "object",
     "oneOf": [
         object_schema(
             {
@@ -524,6 +525,7 @@ def content_branch(content_type, sources, sections, states, default_state):
 
 
 CONTENT_QUERY_SCHEMA = {
+    "type": "object",
     "oneOf": [
         content_branch(
             "season",

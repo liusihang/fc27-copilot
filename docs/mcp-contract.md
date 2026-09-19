@@ -249,3 +249,5 @@ Save and submit reconciliation are narrow localhost daemon RPCs, not additional 
 Catalog facts use `catalog_query`; owned-item state uses `club_query`; playing squad, formation and tactics state uses `squad_query`; current listings use `market_search`; combined historical/economic context uses `price_context`; Seasons/objectives/Evolutions use `content_query`; current SBC capture uses `sbc_refresh`; persisted SBC reads use `sbc_query`.
 
 Every advertised tool includes parameter descriptions and a common `outputSchema` for the success/error envelope. `execute_actions.actions` is a closed discriminated union: each action type exposes only its valid fields and requires its own exact parameters.
+
+Every advertised `inputSchema` and `outputSchema` declares top-level `type: object`, including schemas that also use `oneOf`. This is required by the active OpenClaw `bundle-mcp` tool-directory validator.

@@ -283,6 +283,19 @@ class MCPTest(unittest.TestCase):
             self.assertIn("outputSchema", tool)
             assert_described(tool["inputSchema"])
 
+    def test_openclaw_accepts_top_level_tool_schema_shapes(self):
+        for tool in TOOLS:
+            self.assertEqual(
+                tool["inputSchema"].get("type"),
+                "object",
+                f"{tool['name']} inputSchema must declare top-level object",
+            )
+            self.assertEqual(
+                tool["outputSchema"].get("type"),
+                "object",
+                f"{tool['name']} outputSchema must declare top-level object",
+            )
+
     def test_side_effect_annotations_match_local_persistence(self):
         by_name = {tool["name"]: tool for tool in TOOLS}
         self.assertFalse(by_name["sync_club"]["annotations"]["readOnlyHint"])
