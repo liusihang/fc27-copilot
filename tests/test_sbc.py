@@ -297,19 +297,19 @@ class SbcServiceTest(unittest.TestCase):
         challenge = captured["challenges"][0]
         self.assertEqual(
             challenge["slots"],
-            ["GK", "RB", "CB", "CB", "LB", "RM", "CM", "CM", "LM", "ST", "ST"],
+            ["GK", "LB", "CB", "CB", "RB", "LM", "CM", "CM", "RM", "ST", "ST"],
         )
         positions = [
             "ST",
             "GK",
-            "RB",
-            "CB",
-            "CB",
             "LB",
-            "RM",
-            "CM",
-            "CM",
+            "CB",
+            "CB",
+            "RB",
             "LM",
+            "CM",
+            "CM",
+            "RM",
             "ST",
         ]
         for item_id, position in enumerate(positions, start=1):

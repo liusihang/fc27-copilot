@@ -16,7 +16,7 @@ FORMATION_SLOTS = {
     "f41212": ("GK", "LB", "CB", "CB", "RB", "CDM", "CM", "CM", "CAM", "ST", "ST"),
     "f4222": ("GK", "LB", "CB", "CB", "RB", "CDM", "CDM", "CAM", "CAM", "ST", "ST"),
     "f424": ("GK", "LB", "CB", "CB", "RB", "CM", "CM", "LW", "RW", "ST", "ST"),
-    "f442": ("GK", "RB", "CB", "CB", "LB", "RM", "CM", "CM", "LM", "ST", "ST"),
+    "f442": ("GK", "LB", "CB", "CB", "RB", "LM", "CM", "CM", "RM", "ST", "ST"),
     "f343": ("GK", "CB", "CB", "CB", "LM", "CM", "CM", "RM", "LW", "RW", "ST"),
     "f4141": ("GK", "LB", "CB", "CB", "RB", "CDM", "LM", "CM", "RM", "ST", "ST"),
     "f3142": ("GK", "CB", "CB", "CB", "CDM", "LM", "CM", "RM", "CAM", "ST", "ST"),
