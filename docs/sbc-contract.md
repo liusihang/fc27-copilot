@@ -1,6 +1,6 @@
 # SBC capture, solving, and execution contract
 
-Date: 2026-09-19
+Date: 2026-09-20
 
 ## Agent and tool boundary
 
@@ -24,7 +24,7 @@ The current normalized requirement keys are:
 
 | Key | Meaning |
 |---:|---|
-| 3 | exact squad quality; values 1/2/3 are bronze/silver/gold |
+| 3 | minimum/maximum/exact squad quality; values 1/2/3 are bronze/silver/gold |
 | 17 | minimum/maximum/exact player count for quality 1/2/3 |
 | 19 | team rating |
 | 26 | count of players at or above one OVR threshold |
@@ -32,10 +32,13 @@ The current normalized requirement keys are:
 | 7 | distinct nation count |
 | 8 | distinct league count |
 | 9 | distinct club count |
+| 10 | count of players from one specific nation |
+| 11 | count of players from one specific league |
+| 12 | count of players from one of a specific set of clubs |
 | 4 | maximum players from one league |
 | 5 | maximum players from one nation |
 | 6 | maximum players from one club |
-| 35 | chemistry; preserved as unsupported until EA eligibility readback is available |
+| 35 | minimum/maximum/exact squad chemistry |
 
 Unknown keys, malformed tuples, unknown values, missing or contradictory player counts, and partial squads without exact fillable field-slot evidence are persisted in `unsupported_constraints`. The solver refuses those challenges with `SBC_SCHEMA_UNSUPPORTED`.
 
@@ -55,7 +58,7 @@ Protected items, loan items, Tradepile items, stale/missing items, duplicates, a
 
 The Agent resolves named players through `FC27:club_query` and passes concrete `item_id` values. This keeps duplicate owned copies unambiguous. A required item remains subject to every normal safety and objective rule. Required/excluded overlap, required items outside an explicit candidate pool, protected or loan required items, missing current items, and mandatory value above the hard limit fail before model construction.
 
-The optimizer models the normalized quality, quality-count, team-rating, nation, league, club, same-attribute, squad-size, mandatory-item, and tradeable-value constraints. It minimizes, in order, tradeable-card use when requested, tradeable opportunity cost, rating consumption, and deterministic item identity. Accepted item sets are excluded and the model is resolved to produce additional candidates under one bounded deadline.
+The optimizer models the normalized quality, quality-count, team-rating, nation, league, club, specific-nation, specific-league, specific-club, same-attribute, chemistry, squad-size, mandatory-item, and tradeable-value constraints. Chemistry uses the FC squad thresholds for clubs (2/4/7), nations (2/5/8), and leagues (3/5/8), with no manager contribution in an SBC squad. It minimizes, in order, tradeable-card use when requested, tradeable opportunity cost, rating consumption, and deterministic item identity. Accepted item sets are excluded and the model is resolved to produce additional candidates under one bounded deadline.
 
 Each result reports `optimal`, `feasible`, `infeasible`, or `unknown`. Every feasible model result passes the separate local validator before persistence. Unsupported EA requirements remain blocking; supplying a mandatory item never converts an unknown requirement into verified evidence.
 

@@ -4,6 +4,27 @@ from collections import defaultdict
 from ortools.sat.python import cp_model
 
 
+QUALITY_RANKS = {"bronze": 1, "silver": 2, "gold": 3}
+CHEMISTRY_THRESHOLDS = {
+    "club_id": (2, 4, 7),
+    "nation_id": (2, 5, 8),
+    "league_id": (3, 5, 8),
+}
+
+
+def chemistry_score(items):
+    total = 0
+    for attribute, thresholds in CHEMISTRY_THRESHOLDS.items():
+        counts = defaultdict(int)
+        for row in items:
+            value = row.get(attribute)
+            if value is not None:
+                counts[value] += 1
+        for count in counts.values():
+            total += count * sum(count >= threshold for threshold in thresholds)
+    return total
+
+
 STATUS_NAMES = {
     cp_model.OPTIMAL: "optimal",
     cp_model.FEASIBLE: "feasible",
@@ -88,20 +109,27 @@ class SbcOptimizer:
         for index, constraint in enumerate(challenge["constraints"]):
             kind = constraint["type"]
             if kind == "squad_quality":
-                matching = sum(
-                    selected[item_index]
-                    for item_index, row in enumerate(items)
-                    if row.get("quality") == constraint["quality"]
-                )
-                all_match = model.new_bool_var(f"constraint_{index}_all_quality")
-                model.add(matching == slot_count).only_enforce_if(all_match)
-                model.add(matching <= slot_count - 1).only_enforce_if(all_match.negated())
-                self._add_comparison(
-                    model,
-                    all_match,
-                    constraint["operator"],
-                    int(constraint["value"]),
-                )
+                threshold = QUALITY_RANKS[constraint["quality"]]
+                operator = constraint["operator"]
+                if operator == "min":
+                    matching = sum(
+                        selected[item_index]
+                        for item_index, row in enumerate(items)
+                        if QUALITY_RANKS.get(row.get("quality"), 0) >= threshold
+                    )
+                elif operator == "max":
+                    matching = sum(
+                        selected[item_index]
+                        for item_index, row in enumerate(items)
+                        if 0 < QUALITY_RANKS.get(row.get("quality"), 0) <= threshold
+                    )
+                else:
+                    matching = sum(
+                        selected[item_index]
+                        for item_index, row in enumerate(items)
+                        if QUALITY_RANKS.get(row.get("quality"), 0) == threshold
+                    )
+                model.add(matching == slot_count)
             elif kind == "quality_count":
                 count = sum(
                     selected[item_index]
@@ -150,6 +178,31 @@ class SbcOptimizer:
                 self._add_comparison(
                     model, distinct, constraint["operator"], int(constraint["value"])
                 )
+            elif kind in (
+                "specific_nation_count",
+                "specific_league_count",
+                "specific_club_count",
+            ):
+                attribute = {
+                    "specific_nation_count": "nation_id",
+                    "specific_league_count": "league_id",
+                    "specific_club_count": "club_id",
+                }[kind]
+                values = (
+                    {constraint["nation_id"]}
+                    if kind == "specific_nation_count"
+                    else {constraint["league_id"]}
+                    if kind == "specific_league_count"
+                    else set(constraint["club_ids"])
+                )
+                matching = sum(
+                    selected[item_index]
+                    for item_index, row in enumerate(items)
+                    if row.get(attribute) in values
+                )
+                self._add_comparison(
+                    model, matching, constraint["operator"], int(constraint["value"])
+                )
             elif kind in ("same_nation_max", "same_league_max", "same_club_max"):
                 attribute = {
                     "same_nation_max": "nation_id",
@@ -161,6 +214,13 @@ class SbcOptimizer:
                 )
                 self._add_comparison(
                     model, maximum, constraint["operator"], int(constraint["value"])
+                )
+            elif kind == "chemistry":
+                chemistry = self._chemistry_expression(
+                    model, selected, items, slot_count, index
+                )
+                self._add_comparison(
+                    model, chemistry, constraint["operator"], int(constraint["value"])
                 )
 
     @staticmethod
@@ -215,11 +275,40 @@ class SbcOptimizer:
             model.add(scaled_team_rating <= (value + 1) * scale - 1)
 
     @staticmethod
-    def _groups(items, attribute):
+    def _groups(items, attribute, *, include_none=True):
         groups = defaultdict(list)
         for index, row in enumerate(items):
+            if not include_none and row.get(attribute) is None:
+                continue
             groups[row.get(attribute)].append(index)
         return groups
+
+    def _chemistry_expression(self, model, selected, items, slot_count, index):
+        expressions = []
+        for attribute, thresholds in CHEMISTRY_THRESHOLDS.items():
+            groups = self._groups(items, attribute, include_none=False)
+            for group_index, item_indexes in enumerate(groups.values()):
+                count = sum(selected[item_index] for item_index in item_indexes)
+                points = model.new_int_var(
+                    0,
+                    len(thresholds),
+                    f"constraint_{index}_{attribute}_points_{group_index}",
+                )
+                model.add_allowed_assignments(
+                    [count, points],
+                    [
+                        (size, sum(size >= threshold for threshold in thresholds))
+                        for size in range(slot_count + 1)
+                    ],
+                )
+                contribution = model.new_int_var(
+                    0,
+                    slot_count * len(thresholds),
+                    f"constraint_{index}_{attribute}_contribution_{group_index}",
+                )
+                model.add_multiplication_equality(contribution, [count, points])
+                expressions.append(contribution)
+        return sum(expressions)
 
     def _distinct_count(self, model, selected, items, attribute, slot_count, index):
         used = []

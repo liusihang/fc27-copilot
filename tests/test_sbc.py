@@ -32,6 +32,14 @@ def minimum_rating_requirement(value):
     }
 
 
+def specific_requirement(key, values, count, scope=0):
+    return {
+        "kvPairs": {"_collection": {str(key): list(values)}},
+        "count": count,
+        "scope": scope,
+    }
+
+
 def overall_requirement(key, overall, count):
     return {
         "kvPairs": {"_collection": {str(key): [overall]}},
@@ -229,6 +237,58 @@ class SbcServiceTest(unittest.TestCase):
             self.assertGreaterEqual(
                 solution["validation"]["metrics"]["team_rating"], 62
             )
+
+    def test_marquee_requirement_keys_and_chemistry_are_supported(self):
+        for item_id in range(1, 12):
+            card_id = 1000 + item_id
+            self.service.catalog.facts[card_id].update(
+                {
+                    "overall": 75,
+                    "quality": "gold",
+                    "club_id": 73 if item_id == 1 else 219 if item_id == 2 else 300 + item_id,
+                    "league_id": 308,
+                    "nation_id": 42 if item_id <= 2 else 1,
+                }
+            )
+        captured = self.service.capture_challenges(
+            challenge_payload(
+                [
+                    specific_requirement(10, [42], 1),
+                    specific_requirement(11, [308], 2),
+                    specific_requirement(12, [73, 219], 1),
+                    specific_requirement(3, [2], -1),
+                    specific_requirement(35, [14], -1),
+                    minimum_rating_requirement(75),
+                ]
+            )
+        )
+        challenge = captured["challenges"][0]
+        self.assertEqual(
+            [constraint["type"] for constraint in challenge["constraints"]],
+            [
+                "specific_nation_count",
+                "specific_league_count",
+                "specific_club_count",
+                "squad_quality",
+                "chemistry",
+                "team_rating",
+            ],
+        )
+        self.assertEqual(challenge["unsupported_constraints"], [])
+        result = self.service.solve("4", "16", {}, max_solutions=1)
+        solution = result["solutions"][0]
+        self.assertTrue(solution["validation"]["valid"])
+        self.assertGreaterEqual(solution["validation"]["metrics"]["chemistry"], 14)
+
+    def test_minimum_squad_quality_accepts_higher_quality_items(self):
+        captured = self.service.capture_challenges(
+            challenge_payload([specific_requirement(3, [2], -1)])
+        )
+        challenge = captured["challenges"][0]
+        for card_id in range(1001, 1012):
+            self.service.catalog.facts[card_id]["quality"] = "gold"
+        result = self.service.solve("4", challenge["challenge_id"], {}, max_solutions=1)
+        self.assertTrue(result["solutions"][0]["validation"]["valid"])
 
     def test_brick_challenge_uses_requirement_count_instead_of_formation_size(self):
         captured = self.service.capture_challenges(

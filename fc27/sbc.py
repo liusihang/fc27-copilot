@@ -5,7 +5,7 @@ from collections import Counter
 
 from .errors import FC27Error
 from .runtime import utc_now
-from .sbc_optimizer import SbcOptimizer
+from .sbc_optimizer import QUALITY_RANKS, SbcOptimizer, chemistry_score
 
 
 SCOPE_OPERATORS = {0: "min", 1: "max", 2: "exact"}
@@ -490,13 +490,22 @@ class SbcService:
             "same_league_max": max(Counter(row.get("league_id") for row in items).values(), default=0),
             "same_club_max": max(Counter(row.get("club_id") for row in items).values(), default=0),
             "quality_counts": dict(Counter(row.get("quality") for row in items)),
+            "chemistry": chemistry_score(items),
         }
 
     @staticmethod
     def _constraint_actual(constraint, items, metrics):
         kind = constraint["type"]
         if kind == "squad_quality":
-            return 1 if all(row.get("quality") == constraint["quality"] for row in items) else 0
+            levels = [QUALITY_RANKS.get(row.get("quality"), 0) for row in items]
+            threshold = QUALITY_RANKS[constraint["quality"]]
+            if not levels:
+                return 0
+            if constraint["operator"] == "min":
+                return int(min(levels) >= threshold)
+            if constraint["operator"] == "max":
+                return int(max(levels) <= threshold)
+            return int(all(level == threshold for level in levels))
         if kind == "quality_count":
             return metrics["quality_counts"].get(constraint["quality"], 0)
         if kind == "overall_count":
@@ -509,6 +518,12 @@ class SbcService:
                 int(row["overall"]) <= int(constraint["overall"])
                 for row in items
             )
+        if kind == "specific_nation_count":
+            return sum(row.get("nation_id") == constraint["nation_id"] for row in items)
+        if kind == "specific_league_count":
+            return sum(row.get("league_id") == constraint["league_id"] for row in items)
+        if kind == "specific_club_count":
+            return sum(row.get("club_id") in constraint["club_ids"] for row in items)
         return metrics[kind]
 
     @staticmethod
@@ -793,11 +808,19 @@ class SbcService:
                 unsupported.append({"raw": raw, "reason": "requirement must contain one key"})
                 continue
             key_text, values = next(iter(collection.items()))
-            if not isinstance(values, list) or len(values) != 1:
+            key = int(key_text)
+            if not isinstance(values, list) or not values:
+                unsupported.append({"raw": raw, "reason": "requirement must contain one or more values"})
+                continue
+            if key != 12 and len(values) != 1:
                 unsupported.append({"raw": raw, "reason": "requirement must contain one value"})
                 continue
-            key = int(key_text)
-            source_value = int(values[0])
+            try:
+                source_values = [int(value) for value in values]
+            except (TypeError, ValueError):
+                unsupported.append({"raw": raw, "reason": "requirement values must be integers"})
+                continue
+            source_value = source_values[0]
             operator = SCOPE_OPERATORS.get(int(raw.get("scope", -1)))
             if operator is None:
                 unsupported.append({"raw": raw, "reason": "unknown scope"})
@@ -830,14 +853,37 @@ class SbcService:
                     }
                 )
             elif key == 35:
-                unsupported.append({"raw": raw, "reason": "chemistry requires EA eligibility validation"})
-                continue
+                constraint.update({"type": "chemistry", "value": source_value})
             elif key == 7:
                 constraint.update({"type": "nation_count", "value": source_value})
             elif key == 8:
                 constraint.update({"type": "league_count", "value": source_value})
             elif key == 9:
                 constraint.update({"type": "club_count", "value": source_value})
+            elif key == 10:
+                count = raw.get("count")
+                if isinstance(count, bool) or not isinstance(count, int) or count < 1:
+                    unsupported.append({"raw": raw, "reason": "specific nation requirement count must be positive"})
+                    continue
+                constraint.update(
+                    {"type": "specific_nation_count", "nation_id": source_value, "value": count}
+                )
+            elif key == 11:
+                count = raw.get("count")
+                if isinstance(count, bool) or not isinstance(count, int) or count < 1:
+                    unsupported.append({"raw": raw, "reason": "specific league requirement count must be positive"})
+                    continue
+                constraint.update(
+                    {"type": "specific_league_count", "league_id": source_value, "value": count}
+                )
+            elif key == 12:
+                count = raw.get("count")
+                if isinstance(count, bool) or not isinstance(count, int) or count < 1:
+                    unsupported.append({"raw": raw, "reason": "specific club requirement count must be positive"})
+                    continue
+                constraint.update(
+                    {"type": "specific_club_count", "club_ids": source_values, "value": count}
+                )
             elif key == 4:
                 constraint.update({"type": "same_league_max", "value": source_value})
             elif key == 5:
