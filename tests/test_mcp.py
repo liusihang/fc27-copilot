@@ -433,6 +433,39 @@ class MCPTest(unittest.TestCase):
         self.assertIn("recovery", sync["error"])
         self.assertEqual(execute["error"]["code"], "EXECUTION_DISABLED")
 
+    def test_numeric_ea_error_code_is_normalized_for_mcp_output(self):
+        class NumericErrorBridge:
+            def call(self, method, params):
+                return {
+                    "ok": False,
+                    "error": {
+                        "code": 401,
+                        "status": 401,
+                        "message": "EA Web App service failed with status 401.",
+                    },
+                }
+
+        self.daemon.accounts.activate(
+            {
+                "persona_id": "persona-123",
+                "platform": "ps5",
+                "club_name": "Fixture Club",
+            }
+        )
+        self.daemon.bridge = NumericErrorBridge()
+        response = self.daemon.mcp.handle(
+            {
+                "jsonrpc": "2.0",
+                "id": 3,
+                "method": "tools/call",
+                "params": {"name": "sbc_refresh", "arguments": {}},
+            }
+        )
+        result = response["result"]["structuredContent"]
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error"]["code"], "401")
+        self.assertIsInstance(result["error"]["code"], str)
+
     def test_sync_selects_persona_before_inventory_stage(self):
         self.daemon.bridge = IdentityBridge()
         result = self.daemon.call_tool("sync_club", {})

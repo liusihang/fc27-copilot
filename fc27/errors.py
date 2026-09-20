@@ -1,7 +1,7 @@
 class FC27Error(Exception):
     def __init__(self, code, message, *, retryable=False, recovery=None, details=None):
         super().__init__(message)
-        self.code = code
+        self.code = str(code)
         self.message = message
         self.retryable = retryable
         self.recovery = recovery
