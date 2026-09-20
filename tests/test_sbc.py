@@ -295,17 +295,21 @@ class SbcServiceTest(unittest.TestCase):
         payload["challenges"][0]["formation"] = "f442"
         captured = self.service.capture_challenges(payload)
         challenge = captured["challenges"][0]
+        self.assertEqual(
+            challenge["slots"],
+            ["GK", "RB", "CB", "CB", "LB", "RM", "CM", "CM", "LM", "ST", "ST"],
+        )
         positions = [
             "ST",
             "GK",
-            "LB",
-            "CB",
-            "CB",
             "RB",
-            "LM",
-            "CM",
-            "CM",
+            "CB",
+            "CB",
+            "LB",
             "RM",
+            "CM",
+            "CM",
+            "LM",
             "ST",
         ]
         for item_id, position in enumerate(positions, start=1):
