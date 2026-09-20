@@ -25,7 +25,11 @@ class FakeCatalog:
 
 
 class FakePriceClient:
+    def __init__(self):
+        self.calls = []
+
     def current_prices(self, card_ea_ids):
+        self.calls.append(list(card_ea_ids))
         observed_at = "2026-09-20T12:00:00Z"
         return {
             "observed_at": observed_at,
@@ -194,8 +198,9 @@ class SbcServiceTest(unittest.TestCase):
                     "is_evolution": False,
                 }
             connection.commit()
+        self.price_client = FakePriceClient()
         self.service = SbcService(
-            self.runtime, FakeCatalog(facts), price_client=FakePriceClient()
+            self.runtime, FakeCatalog(facts), price_client=self.price_client
         )
 
     def tearDown(self):
@@ -389,7 +394,7 @@ class SbcServiceTest(unittest.TestCase):
             )
         self.assertEqual(context.exception.code, "SBC_NO_SOLUTION")
 
-    def test_planner_returns_club_and_bounded_purchase_classes(self):
+    def test_default_planner_returns_owned_only_without_loading_market_prices(self):
         payload = brick_challenge_payload(3)
         challenge = self.service.capture_challenges(payload)["challenges"][0]
         for item_id in range(1, 16):
@@ -412,37 +417,122 @@ class SbcServiceTest(unittest.TestCase):
         result = self.service.solve(
             "1", challenge["challenge_id"], {}, max_solutions=1
         )
-        by_type = {plan["plan_type"]: plan for plan in result["plans"]}
-        self.assertEqual(
-            {
-                "club_only",
-                "hybrid_one_purchase",
-                "hybrid_two_purchase",
-                "market_benchmark",
-            },
-            set(by_type),
-        )
-        self.assertEqual(by_type["club_only"]["metrics"]["rating_vector"], [70] * 3)
-        self.assertEqual(
-            by_type["hybrid_one_purchase"]["metrics"]["rating_vector"],
-            [70, 70, 60],
-        )
-        self.assertEqual(
-            by_type["hybrid_two_purchase"]["metrics"]["rating_vector"],
-            [70, 60, 60],
-        )
-        self.assertEqual(
-            by_type["market_benchmark"]["metrics"]["rating_vector"],
-            [60, 60, 60],
-        )
-        self.assertTrue(by_type["club_only"]["executable"])
-        self.assertFalse(by_type["hybrid_one_purchase"]["executable"])
-        self.assertTrue(
-            by_type["hybrid_one_purchase"]["market_verification_required"]
-        )
+        self.assertEqual(result["requested_purchase_budget"], 0)
+        self.assertEqual([plan["purchase_count"] for plan in result["plans"]], [0])
+        self.assertEqual(result["plans"][0]["plan_type"], "club_only")
+        self.assertEqual(result["plans"][0]["metrics"]["rating_vector"], [70] * 3)
+        self.assertTrue(result["plans"][0]["executable"])
         self.assertEqual(result["solution_count"], 1)
-        self.assertEqual(result["candidate_pool"]["catalog_count"], 3)
+        self.assertEqual(result["candidate_pool"]["catalog_count"], 0)
+        self.assertEqual(list(result["budget_analysis"]), ["0"])
+        self.assertEqual(self.price_client.calls, [])
         self.assertEqual(result["actions_performed"], [])
+
+    def test_planner_expands_exact_purchase_levels_incrementally(self):
+        payload = brick_challenge_payload(3)
+        challenge = self.service.capture_challenges(payload)["challenges"][0]
+        for item_id in range(1, 16):
+            self.service.catalog.facts[1000 + item_id]["overall"] = 70
+        self.service.catalog.market_candidates = [
+            {
+                "card_ea_id": 2000 + index,
+                "base_player_ea_id": 3000 + index,
+                "overall": 60,
+                "quality": "bronze",
+                "club_id": 100 + index,
+                "league_id": 200 + index,
+                "nation_id": 300 + index,
+                "positions": ["ST"],
+                "is_special": False,
+                "is_evolution": False,
+            }
+            for index in range(1, 4)
+        ]
+        solve_calls = []
+        solve_domain = self.service._solve_domain
+
+        def recording_solve_domain(*args, **kwargs):
+            solve_calls.append(kwargs.get("exact_purchase_count"))
+            return solve_domain(*args, **kwargs)
+
+        self.service._solve_domain = recording_solve_domain
+        result = self.service.solve(
+            "1",
+            challenge["challenge_id"],
+            {},
+            max_solutions=2,
+            purchase_budget=2,
+        )
+        by_budget = {}
+        for plan in result["plans"]:
+            by_budget.setdefault(plan["purchase_budget"], []).append(plan)
+            self.assertEqual(plan["purchase_count"], plan["purchase_budget"])
+        self.assertEqual(set(by_budget), {0, 1, 2})
+        self.assertEqual(by_budget[0][0]["metrics"]["rating_vector"], [70] * 3)
+        self.assertEqual(by_budget[1][0]["metrics"]["rating_vector"], [70, 70, 60])
+        self.assertEqual(by_budget[2][0]["metrics"]["rating_vector"], [70, 60, 60])
+        self.assertTrue(by_budget[0][0]["executable"])
+        self.assertFalse(by_budget[1][0]["executable"])
+        self.assertTrue(by_budget[1][0]["market_verification_required"])
+        self.assertEqual(by_budget[1][0]["solver_status"], "LOCAL_OPTIMUM")
+        first_purchase_ids = {
+            row["card_ea_id"] for row in by_budget[1][0]["purchase_targets"]
+        }
+        second_purchase_ids = {
+            row["card_ea_id"] for row in by_budget[2][0]["purchase_targets"]
+        }
+        self.assertTrue(first_purchase_ids.issubset(second_purchase_ids))
+        self.assertEqual(result["requested_purchase_budget"], 2)
+        self.assertEqual(set(result["budget_analysis"]), {"0", "1", "2"})
+        self.assertNotIn("market_benchmark", result)
+        self.assertEqual(len(self.price_client.calls), 1)
+        self.assertEqual(result["solution_count"], 2)
+        self.assertEqual(solve_calls, [0])
+
+    def test_purchase_budget_cannot_exceed_challenge_size(self):
+        challenge = self.service.capture_challenges(brick_challenge_payload(3))[
+            "challenges"
+        ][0]
+        with self.assertRaises(FC27Error) as context:
+            self.service.solve(
+                "1", challenge["challenge_id"], {}, purchase_budget=4
+            )
+        self.assertEqual(context.exception.code, "SBC_PURCHASE_BUDGET_INVALID")
+
+    def test_planner_supports_purchase_budget_equal_to_challenge_size(self):
+        challenge = self.service.capture_challenges(brick_challenge_payload(3))[
+            "challenges"
+        ][0]
+        for item_id in range(1, 16):
+            self.service.catalog.facts[1000 + item_id]["overall"] = 70
+        self.service.catalog.market_candidates = [
+            {
+                "card_ea_id": 2100 + index,
+                "base_player_ea_id": 3100 + index,
+                "overall": 60,
+                "quality": "bronze",
+                "club_id": 400 + index,
+                "league_id": 500 + index,
+                "nation_id": 600 + index,
+                "positions": ["ST"],
+                "is_special": False,
+                "is_evolution": False,
+            }
+            for index in range(3)
+        ]
+        result = self.service.solve(
+            "1",
+            challenge["challenge_id"],
+            {},
+            max_solutions=1,
+            purchase_budget=3,
+        )
+        highest = [
+            plan for plan in result["plans"] if plan["purchase_budget"] == 3
+        ]
+        self.assertEqual(len(highest), 1)
+        self.assertEqual(highest[0]["purchase_count"], 3)
+        self.assertEqual(highest[0]["owned_count"], 0)
 
     def test_optimizer_rating_model_matches_independent_validator(self):
         self.service.capture_challenges(

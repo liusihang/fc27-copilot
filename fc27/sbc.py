@@ -2,7 +2,7 @@ import hashlib
 import json
 import math
 import time
-from collections import Counter
+from collections import Counter, defaultdict
 
 from .errors import FC27Error
 from .market import FutggPriceClient
@@ -121,9 +121,10 @@ class SbcService:
         objective=None,
         max_solutions=5,
         *,
+        purchase_budget=0,
         reserved_item_ids=None,
     ):
-        deadline = time.monotonic() + 120.0
+        started_at = time.monotonic()
         objective = self._normalize_objective(objective)
         challenge = self.runtime.get_sbc_challenge(challenge_id)
         if challenge is None or str(challenge.get("set_id")) != str(set_id):
@@ -140,6 +141,11 @@ class SbcService:
                 recovery="Inspect unsupported_constraints and implement those requirement types before solving.",
                 details={"unsupported_constraints": unsupported},
             )
+        player_count = self._player_count(challenge)
+        purchase_budget = self._normalize_purchase_budget(
+            purchase_budget, player_count
+        )
+        deadline = started_at + min(600.0, 120.0 + 45.0 * purchase_budget)
         items, automatic_exclusions = self._candidate_items(
             objective, reserved_item_ids or []
         )
@@ -156,15 +162,17 @@ class SbcService:
         self._validate_required_items(
             challenge, items, objective, automatic_exclusions["by_item_id"]
         )
-        player_count = self._player_count(challenge)
         maximum_solutions = max(1, min(int(max_solutions), 10))
+        club_started_at = time.monotonic()
         club_optimized, club_candidates = self._solve_domain(
             challenge,
             items,
             objective,
             maximum_solutions,
             deadline,
+            exact_purchase_count=0,
         )
+        club_elapsed = time.monotonic() - club_started_at
         solutions = []
         plans = []
         for candidate, selected, validation in club_candidates:
@@ -182,7 +190,7 @@ class SbcService:
                     validation,
                     candidate,
                     plan_type="club_only",
-                    purchase_budget_cap=0,
+                    purchase_budget=0,
                     solution_id=solution["solution_id"],
                 )
             )
@@ -192,110 +200,170 @@ class SbcService:
             "price_eligible_count": 0,
             "price_unavailable_count": 0,
             "modeled_market_count": 0,
+            "generated_column_count": 0,
+            "max_modeled_domain_count": len(items),
+            "branch_count": 0,
             "price_source": None,
         }
         budget_analysis = {
-            "0": self._budget_summary(club_optimized, club_candidates)
+            "0": self._budget_summary(
+                [club_optimized],
+                club_candidates,
+                purchase_budget=0,
+                branch_count=1,
+                generated_column_count=0,
+                modeled_domain_count=len(items),
+                elapsed_seconds=club_elapsed,
+            )
         }
-        market_benchmark = None
         planner_results = [club_optimized]
-        if objective.get("candidate_item_ids") is None:
+        previous_frontier = club_candidates
+        if purchase_budget > 0:
             club_rating_cap = None
             if club_candidates:
                 club_rating_cap = club_candidates[0][2]["metrics"]["max_overall"]
             market_items, catalog_coverage = self._market_candidates(
                 challenge, objective, player_count, club_rating_cap
             )
-            combined_items = [*items, *market_items]
-            incumbent_items = club_candidates[0][1] if club_candidates else []
-            hybrid_shortlist = self._market_shortlist(
-                market_items,
-                challenge,
-                incumbent_items,
-                benchmark=False,
-            )
-            benchmark_shortlist = self._market_shortlist(
-                market_items,
-                challenge,
-                incumbent_items,
-                benchmark=True,
-            )
-            catalog_coverage["hybrid_shortlist_count"] = len(hybrid_shortlist)
-            catalog_coverage["benchmark_shortlist_count"] = len(
-                benchmark_shortlist
-            )
-            for purchase_limit in (1, 2):
-                internal_objective = {
-                    **objective,
-                    "max_purchase_count": purchase_limit,
-                }
-                optimized, candidates = self._solve_seeded_domain(
-                    challenge,
-                    combined_items,
-                    [*items, *hybrid_shortlist],
-                    internal_objective,
-                    min(maximum_solutions, 3),
-                    deadline,
-                    proof_budget_seconds=20.0,
-                )
-                planner_results.append(optimized)
-                budget_analysis[str(purchase_limit)] = self._budget_summary(
-                    optimized, candidates
-                )
-                for candidate, selected, validation in candidates:
-                    purchase_count = sum(
-                        row.get("source") == "market" for row in selected
+            generated_market_ids = set()
+            maximum_modeled_domain = len(items)
+            total_branch_count = 0
+            for current_budget in range(1, purchase_budget + 1):
+                level_started_at = time.monotonic()
+                level_deadline = min(deadline, level_started_at + 20.0)
+                branches = previous_frontier[:3] or [None]
+                level_candidates = []
+                level_results = []
+                level_generated_ids = set()
+                level_modeled_domain = len(items)
+                level_branch_count = 0
+                for branch_index, branch in enumerate(branches):
+                    now = time.monotonic()
+                    if now >= level_deadline:
+                        break
+                    anchors = branch[1] if branch is not None else items
+                    fixed_market_items = [
+                        row for row in anchors if row.get("source") == "market"
+                    ]
+                    fixed_item_ids = [
+                        int(row["item_id"]) for row in fixed_market_items
+                    ]
+                    columns = self._residual_market_columns(
+                        market_items,
+                        challenge,
+                        anchors,
+                        current_budget,
+                        excluded_card_ids={
+                            int(row["card_ea_id"]) for row in fixed_market_items
+                        },
                     )
+                    level_generated_ids.update(
+                        int(row["card_ea_id"]) for row in columns
+                    )
+                    generated_market_ids.update(level_generated_ids)
+                    domain_by_item_id = {
+                        int(row["item_id"]): row
+                        for row in [*items, *fixed_market_items, *columns]
+                    }
+                    domain = list(domain_by_item_id.values())
+                    maximum_modeled_domain = max(maximum_modeled_domain, len(domain))
+                    level_modeled_domain = max(level_modeled_domain, len(domain))
+                    local_candidates = (
+                        self._local_replacement_candidates(
+                            challenge,
+                            anchors,
+                            columns,
+                            objective,
+                            maximum_solutions,
+                        )
+                        if branch is not None
+                        else []
+                    )
+                    if local_candidates:
+                        optimized = {
+                            "status": "LOCAL_OPTIMUM",
+                            "complete": True,
+                            "proof": {
+                                "rating_optimality": "UNPROVEN",
+                                "policy_optimality": "UNPROVEN",
+                                "local_neighborhood": "single_market_replacement",
+                                "frontier_complete": True,
+                                "stages": [],
+                            },
+                            "solutions": [
+                                candidate[0] for candidate in local_candidates
+                            ],
+                        }
+                        candidates = local_candidates
+                    else:
+                        remaining_branches = len(branches) - branch_index
+                        branch_deadline = min(
+                            level_deadline,
+                            now
+                            + max(
+                                5.0,
+                                (level_deadline - now) / remaining_branches,
+                            ),
+                        )
+                        hint = (
+                            branch[0].get("slot_item_ids")
+                            if branch is not None
+                            else None
+                        )
+                        optimized, candidates = self._solve_domain(
+                            challenge,
+                            domain,
+                            objective,
+                            maximum_solutions,
+                            branch_deadline,
+                            exact_purchase_count=current_budget,
+                            fixed_item_ids=fixed_item_ids,
+                            hint_slot_item_ids=hint,
+                        )
+                    optimized, candidates = self._mark_realization_scope(
+                        optimized,
+                        candidates,
+                        purchase_budget=current_budget,
+                        branch_index=branch_index,
+                        fixed_item_ids=fixed_item_ids,
+                        generated_column_count=len(columns),
+                        modeled_domain_count=len(domain),
+                    )
+                    level_results.append(optimized)
+                    level_candidates.extend(candidates)
+                    planner_results.append(optimized)
+                    total_branch_count += 1
+                    level_branch_count += 1
+
+                previous_frontier = self._pareto_candidates(
+                    level_candidates, maximum_solutions
+                )
+                level_elapsed = time.monotonic() - level_started_at
+                budget_analysis[str(current_budget)] = self._budget_summary(
+                    level_results,
+                    previous_frontier,
+                    purchase_budget=current_budget,
+                    branch_count=level_branch_count,
+                    generated_column_count=len(level_generated_ids),
+                    modeled_domain_count=level_modeled_domain,
+                    elapsed_seconds=level_elapsed,
+                )
+                for candidate, selected, validation in previous_frontier:
                     plans.append(
                         self._plan(
                             challenge,
                             selected,
                             validation,
                             candidate,
-                            plan_type=(
-                                "club_only"
-                                if purchase_count == 0
-                                else {
-                                    1: "hybrid_one_purchase",
-                                    2: "hybrid_two_purchase",
-                                }.get(purchase_count, "hybrid_purchase")
-                            ),
-                            purchase_budget_cap=purchase_limit,
+                            plan_type="hybrid_purchase",
+                            purchase_budget=current_budget,
                         )
                     )
+            catalog_coverage["generated_column_count"] = len(generated_market_ids)
+            catalog_coverage["max_modeled_domain_count"] = maximum_modeled_domain
+            catalog_coverage["branch_count"] = total_branch_count
 
-            required_ids = set(objective.get("required_item_ids") or [])
-            required_owned = [
-                row for row in items if int(row["item_id"]) in required_ids
-            ]
-            benchmark_items = [*required_owned, *market_items]
-            benchmark_objective = {
-                **objective,
-                "max_purchase_count": player_count,
-            }
-            benchmark_optimized, benchmark_candidates = self._solve_seeded_domain(
-                challenge,
-                benchmark_items,
-                [*required_owned, *benchmark_shortlist],
-                benchmark_objective,
-                1,
-                deadline,
-                proof_budget_seconds=15.0,
-            )
-            planner_results.append(benchmark_optimized)
-            if benchmark_candidates:
-                candidate, selected, validation = benchmark_candidates[0]
-                market_benchmark = self._plan(
-                    challenge,
-                    selected,
-                    validation,
-                    candidate,
-                    plan_type="market_benchmark",
-                    purchase_budget_cap=player_count,
-                )
-                plans.append(market_benchmark)
-
-        plans = self._deduplicate_plans(plans)[:10]
+        plans = self._deduplicate_plans(plans)
         if not plans:
             statuses = {value["status"] for value in planner_results}
             if "UNKNOWN_NO_SOLUTION_FOUND" in statuses:
@@ -308,7 +376,7 @@ class SbcService:
                 )
             raise FC27Error(
                 "SBC_NO_SOLUTION",
-                "No owned or bounded-purchase combination satisfies the normalized challenge and Agent objective.",
+                "No owned or requested-purchase combination satisfies the normalized challenge and Agent objective.",
                 recovery="Inspect required items and exclusions or acquire additional eligible cards.",
                 details={
                     "solver_status": sorted(statuses),
@@ -318,28 +386,43 @@ class SbcService:
         return {
             "challenge": challenge,
             "objective": objective,
+            "requested_purchase_budget": purchase_budget,
             "candidate_pool": {
                 "eligible_count": len(items),
                 "excluded_counts": automatic_exclusions["counts"],
                 **catalog_coverage,
             },
             "solver": {
-                "engine": "or-tools-cp-sat",
-                "status": club_optimized["status"],
-                "complete": club_optimized["complete"],
-                "proof": club_optimized["proof"],
+                "engine": (
+                    "or-tools-cp-sat"
+                    if purchase_budget == 0
+                    else "incremental-residual-planner"
+                ),
+                "fallback_engine": (
+                    None if purchase_budget == 0 else "or-tools-cp-sat"
+                ),
+                "status": budget_analysis[str(purchase_budget)]["solver_status"],
+                "scope": budget_analysis[str(purchase_budget)]["optimality_scope"],
             },
             "solution_count": len(solutions),
             "solutions": solutions,
             "plan_count": len(plans),
             "plans": plans,
             "budget_analysis": budget_analysis,
-            "market_benchmark": market_benchmark,
             "actions_performed": [],
         }
 
     def _solve_domain(
-        self, challenge, items, objective, max_solutions, deadline
+        self,
+        challenge,
+        items,
+        objective,
+        max_solutions,
+        deadline,
+        *,
+        exact_purchase_count=None,
+        fixed_item_ids=None,
+        hint_slot_item_ids=None,
     ):
         player_count = self._player_count(challenge)
         if len(items) < player_count:
@@ -348,7 +431,13 @@ class SbcService:
         if remaining <= 0:
             return self._empty_optimizer_result("UNKNOWN_NO_SOLUTION_FOUND"), []
         optimized = SbcOptimizer(time_limit_seconds=remaining).solve(
-            challenge, items, objective, max_solutions
+            challenge,
+            items,
+            objective,
+            max_solutions,
+            exact_purchase_count=exact_purchase_count,
+            fixed_item_ids=fixed_item_ids,
+            hint_slot_item_ids=hint_slot_item_ids,
         )
         by_item_id = {int(row["item_id"]): row for row in items}
         candidates = []
@@ -377,108 +466,196 @@ class SbcService:
             candidates.append((candidate, selected, validation))
         return optimized, candidates
 
-    def _solve_seeded_domain(
-        self,
-        challenge,
-        full_items,
-        seed_items,
-        objective,
-        max_solutions,
-        deadline,
-        *,
-        proof_budget_seconds,
-    ):
-        seed_deadline = min(deadline, time.monotonic() + 10.0)
-        seed_optimized, seed_candidates = self._solve_domain(
-            challenge,
-            seed_items,
-            objective,
-            max_solutions,
-            seed_deadline,
-        )
-        seed_optimized, seed_candidates = self._mark_restricted_domain(
-            seed_optimized, seed_candidates
-        )
-
-        if time.monotonic() >= deadline:
-            return seed_optimized, seed_candidates
-        proof_deadline = min(
-            deadline, time.monotonic() + max(1.0, float(proof_budget_seconds))
-        )
-        full_optimized, full_candidates = self._solve_domain(
-            challenge,
-            full_items,
-            objective,
-            max_solutions,
-            proof_deadline,
-        )
-        merged = self._merge_planning_candidates(
-            full_candidates, seed_candidates, max_solutions
-        )
-        if full_optimized["status"] == "OPTIMAL_PROVEN":
-            return full_optimized, merged
-        if merged:
-            proof = full_optimized.get("proof") or seed_optimized["proof"]
-            return {
-                "status": "FEASIBLE_UNPROVEN",
-                "complete": False,
-                "proof": {
-                    **proof,
-                    "rating_optimality": "UNPROVEN",
-                    "policy_optimality": "UNPROVEN",
-                },
-                "solutions": [value[0] for value in merged],
-            }, merged
-        return full_optimized, []
-
     @staticmethod
-    def _mark_restricted_domain(optimized, candidates):
+    def _mark_realization_scope(
+        optimized,
+        candidates,
+        *,
+        purchase_budget,
+        branch_index,
+        fixed_item_ids,
+        generated_column_count,
+        modeled_domain_count,
+    ):
+        scope = {
+            "type": "residual_realization_branch",
+            "purchase_budget": purchase_budget,
+            "branch_index": branch_index,
+            "fixed_market_item_ids": list(fixed_item_ids),
+            "generated_column_count": generated_column_count,
+            "modeled_domain_count": modeled_domain_count,
+        }
         marked = []
         for candidate, selected, validation in candidates:
+            status = (
+                "OPTIMAL_WITHIN_REALIZATION_SET"
+                if candidate["status"] == "OPTIMAL_PROVEN"
+                else "LOCAL_OPTIMUM"
+                if candidate["status"] in ("LOCAL_FEASIBLE", "LOCAL_OPTIMUM")
+                else "VALIDATED_FEASIBLE"
+            )
             candidate = {
                 **candidate,
-                "status": "FEASIBLE_UNPROVEN",
+                "status": status,
                 "proof": {
                     **candidate["proof"],
-                    "rating_optimality": "UNPROVEN",
-                    "policy_optimality": "UNPROVEN",
-                    "restricted_domain": True,
+                    "optimality_scope": scope,
                 },
             }
             validation = {
                 **validation,
                 "solver": {
                     **validation["solver"],
-                    "status": "FEASIBLE_UNPROVEN",
+                    "status": status,
                     "proof": candidate["proof"],
                 },
             }
             marked.append((candidate, selected, validation))
-        if not marked:
-            return optimized, []
+        if marked:
+            statuses = {candidate[0]["status"] for candidate in marked}
+            if statuses == {"OPTIMAL_WITHIN_REALIZATION_SET"}:
+                scoped_status = "OPTIMAL_WITHIN_REALIZATION_SET"
+            elif statuses == {"LOCAL_OPTIMUM"}:
+                scoped_status = "LOCAL_OPTIMUM"
+            else:
+                scoped_status = "VALIDATED_FEASIBLE"
+        else:
+            scoped_status = optimized["status"]
         return {
-            "status": "FEASIBLE_UNPROVEN",
-            "complete": False,
+            **optimized,
+            "status": scoped_status,
             "proof": {
                 **optimized["proof"],
-                "rating_optimality": "UNPROVEN",
-                "policy_optimality": "UNPROVEN",
-                "restricted_domain": True,
+                "optimality_scope": scope,
             },
             "solutions": [value[0] for value in marked],
         }, marked
 
+    def _local_replacement_candidates(
+        self,
+        challenge,
+        anchor_items,
+        market_columns,
+        objective,
+        limit,
+    ):
+        required_item_ids = {
+            int(item_id) for item_id in objective.get("required_item_ids") or []
+        }
+        replaceable_indexes = [
+            index
+            for index, row in enumerate(anchor_items)
+            if row.get("source") != "market"
+            and int(row["item_id"]) not in required_item_ids
+        ]
+        candidates = []
+        for market_item in market_columns:
+            for item_index in replaceable_indexes:
+                selected = list(anchor_items)
+                selected[item_index] = market_item
+                validation = self.validate(challenge, selected, objective)
+                if not validation["valid"]:
+                    continue
+                components = self._objective_components(selected)
+                candidate = {
+                    "status": "LOCAL_FEASIBLE",
+                    "item_ids": sorted(int(row["item_id"]) for row in selected),
+                    "slot_item_ids": [int(row["item_id"]) for row in selected],
+                    "objective_value": 0,
+                    "objective_components": components,
+                    "proof": {
+                        "rating_optimality": "UNPROVEN",
+                        "policy_optimality": "UNPROVEN",
+                        "pareto_status": "NONDOMINATED_WITHIN_RETURNED",
+                        "frontier_complete": False,
+                        "local_neighborhood": "single_market_replacement",
+                        "stages": [],
+                    },
+                    "wall_time_seconds": 0.0,
+                }
+                validation["solver"] = {
+                    "engine": "local-neighborhood",
+                    "status": "LOCAL_FEASIBLE",
+                    "objective_value": 0,
+                    "objective_components": components,
+                    "proof": candidate["proof"],
+                    "wall_time_seconds": 0.0,
+                }
+                candidates.append((candidate, selected, validation))
+        return self._pareto_candidates(candidates, limit)
+
+    @staticmethod
+    def _objective_components(items):
+        rating_vector = sorted(
+            (int(row["overall"]) for row in items), reverse=True
+        )
+        return {
+            "rating_vector": rating_vector,
+            "max_overall": max(rating_vector, default=0),
+            "purchase_count": sum(
+                1 for row in items if row.get("source") == "market"
+            ),
+            "purchase_value": sum(
+                int(row.get("purchase_price") or 0) for row in items
+            ),
+            "tradeable_item_count": sum(
+                1
+                for row in items
+                if row.get("source") != "market" and row.get("tradeable")
+            ),
+            "tradeable_value": sum(
+                int(row.get("tradeable_value") or 0) for row in items
+            ),
+            "total_overall": sum(rating_vector),
+            "item_ids": [int(row["item_id"]) for row in items],
+        }
+
     @classmethod
-    def _merge_planning_candidates(cls, primary, secondary, limit):
+    def _pareto_candidates(cls, candidates, limit):
         by_items = {}
-        for value in [*primary, *secondary]:
+        for value in candidates:
             key = tuple(sorted(int(row["item_id"]) for row in value[1]))
             current = by_items.get(key)
             if current is None or cls._candidate_sort_key(value) < cls._candidate_sort_key(
                 current
             ):
                 by_items[key] = value
-        return sorted(by_items.values(), key=cls._candidate_sort_key)[:limit]
+        unique = list(by_items.values())
+        frontier = [
+            candidate
+            for candidate in unique
+            if not any(
+                other is not candidate and cls._dominates(other, candidate)
+                for other in unique
+            )
+        ]
+        return sorted(frontier, key=cls._candidate_sort_key)[:limit]
+
+    @staticmethod
+    def _dominates(left, right):
+        left_components = left[0]["objective_components"]
+        right_components = right[0]["objective_components"]
+        left_values = (
+            tuple(left[2]["metrics"]["rating_vector"]),
+            int(left_components["purchase_value"]),
+            int(left_components["tradeable_value"]),
+            int(left_components["tradeable_item_count"]),
+            -int(left[2]["metrics"]["chemistry"]),
+        )
+        right_values = (
+            tuple(right[2]["metrics"]["rating_vector"]),
+            int(right_components["purchase_value"]),
+            int(right_components["tradeable_value"]),
+            int(right_components["tradeable_item_count"]),
+            -int(right[2]["metrics"]["chemistry"]),
+        )
+        return all(
+            left_value <= right_value
+            for left_value, right_value in zip(left_values, right_values)
+        ) and any(
+            left_value < right_value
+            for left_value, right_value in zip(left_values, right_values)
+        )
 
     @staticmethod
     def _candidate_sort_key(value):
@@ -486,10 +663,10 @@ class SbcService:
         components = candidate["objective_components"]
         return (
             validation["metrics"]["rating_vector"],
-            components["purchase_count"],
-            components["tradeable_item_count"],
-            components["tradeable_value"],
             components["purchase_value"],
+            components["tradeable_value"],
+            components["tradeable_item_count"],
+            -validation["metrics"]["chemistry"],
             tuple(candidate["item_ids"]),
         )
 
@@ -619,32 +796,35 @@ class SbcService:
         return reduced
 
     @staticmethod
-    def _market_shortlist(items, challenge, incumbent_items, *, benchmark):
+    def _residual_market_columns(
+        items,
+        challenge,
+        anchor_items,
+        purchase_budget,
+        *,
+        excluded_card_ids,
+    ):
         ordered = sorted(
-            items,
+            (
+                row
+                for row in items
+                if int(row["card_ea_id"]) not in excluded_card_ids
+            ),
             key=lambda row: (
                 int(row["overall"]),
                 int(row["purchase_price"]),
                 int(row["card_ea_id"]),
             ),
         )
-        selected = {}
-
-        def retain(rows, limit):
-            for row in list(rows)[:limit]:
-                selected[int(row["card_ea_id"])] = row
-
-        retain(ordered, 500 if benchmark else 300)
-
-        by_positions = {}
-        for row in ordered:
-            key = tuple(
-                sorted(str(value).upper() for value in row.get("positions") or [])
-            )
-            by_positions.setdefault(key, []).append(row)
-        for rows in by_positions.values():
-            retain(rows, 8 if benchmark else 4)
-
+        positions = sorted({str(value).upper() for value in challenge["slots"]})
+        position_index = {
+            position: index for index, position in enumerate(positions)
+        }
+        explicit = {
+            "club_id": set(),
+            "league_id": set(),
+            "nation_id": set(),
+        }
         for constraint in challenge["constraints"]:
             mapping = {
                 "specific_club_count": ("club_id", "club_ids"),
@@ -654,43 +834,101 @@ class SbcService:
             if mapping is None:
                 continue
             attribute, values_key = mapping
-            values = set(constraint[values_key])
-            retain(
-                (row for row in ordered if row.get(attribute) in values),
-                300,
+            explicit[attribute].update(
+                int(value) for value in constraint[values_key]
             )
 
-        relevant_values = {
-            attribute: {
+        anchor_counts = {
+            attribute: Counter(
                 row.get(attribute)
-                for row in incumbent_items
+                for row in anchor_items
                 if row.get(attribute) is not None
-            }
+            )
             for attribute in ("club_id", "league_id", "nation_id")
         }
-        limits = {
-            "club_id": 20,
-            "league_id": 100,
-            "nation_id": 100,
+        grouped = defaultdict(list)
+        for row in ordered:
+            position_mask = 0
+            for position in row.get("positions") or []:
+                index = position_index.get(str(position).upper())
+                if index is not None:
+                    position_mask |= 1 << index
+            explicit_hits = tuple(
+                int(row.get(attribute) in explicit[attribute])
+                for attribute in ("club_id", "league_id", "nation_id")
+            )
+            shared = tuple(
+                min(anchor_counts[attribute].get(row.get(attribute), 0), 7)
+                for attribute in ("club_id", "league_id", "nation_id")
+            )
+            role_key = (
+                int(row["overall"]),
+                row.get("quality"),
+                explicit_hits,
+                row.get("club_id") if shared[0] else None,
+                row.get("league_id") if shared[1] else None,
+                row.get("nation_id") if shared[2] else None,
+                position_mask,
+            )
+            shared_strength = shared[0] * 3 + shared[1] * 2 + shared[2]
+            grouped[role_key].append((shared_strength, row))
+
+        relevant = []
+        representatives_per_role = 2 if purchase_budget == 1 else 3
+        for values in grouped.values():
+            values.sort(
+                key=lambda value: (
+                    -value[0],
+                    int(value[1]["purchase_price"]),
+                    int(value[1]["card_ea_id"]),
+                )
+            )
+            relevant.extend(row for _, row in values[:representatives_per_role])
+
+        relevant.sort(
+            key=lambda row: (
+                int(row["overall"]),
+                int(row["purchase_price"]),
+                -sum(
+                    anchor_counts[attribute].get(row.get(attribute), 0)
+                    for attribute in ("club_id", "league_id", "nation_id")
+                ),
+                int(row["card_ea_id"]),
+            )
+        )
+        selected = {}
+
+        def retain(rows, limit):
+            for row in rows[:limit]:
+                selected[int(row["card_ea_id"])] = row
+
+        first_level = purchase_budget == 1
+        retain(relevant, 180 if first_level else 140)
+        by_attribute = {
+            attribute: defaultdict(list)
+            for attribute in ("club_id", "league_id", "nation_id")
         }
-        for attribute, values in relevant_values.items():
+        for row in relevant:
+            for attribute in by_attribute:
+                by_attribute[attribute][row.get(attribute)].append(row)
+
+        explicit_limit = 80 if first_level else 60
+        for attribute, values in explicit.items():
             for value in values:
+                retain(by_attribute[attribute].get(value, []), explicit_limit)
+
+        limits = (
+            {"club_id": 8, "league_id": 24, "nation_id": 16}
+            if first_level
+            else {"club_id": 6, "league_id": 12, "nation_id": 10}
+        )
+        identity_limits = {"club_id": 4, "league_id": 4, "nation_id": 6}
+        for attribute, counts in anchor_counts.items():
+            for value, _ in counts.most_common(identity_limits[attribute]):
                 retain(
-                    (row for row in ordered if row.get(attribute) == value),
+                    by_attribute[attribute].get(value, []),
                     limits[attribute],
                 )
-
-        if benchmark:
-            for attribute, limit in (
-                ("club_id", 4),
-                ("league_id", 24),
-                ("nation_id", 12),
-            ):
-                groups = {}
-                for row in ordered:
-                    groups.setdefault(row.get(attribute), []).append(row)
-                for rows in groups.values():
-                    retain(rows, limit)
 
         return sorted(
             selected.values(),
@@ -702,12 +940,57 @@ class SbcService:
         )
 
     @staticmethod
-    def _budget_summary(optimized, candidates):
+    def _budget_summary(
+        optimized_results,
+        candidates,
+        *,
+        purchase_budget,
+        branch_count,
+        generated_column_count,
+        modeled_domain_count,
+        elapsed_seconds,
+    ):
         best = candidates[0][2]["metrics"] if candidates else None
+        statuses = [result["status"] for result in optimized_results]
+        if candidates and purchase_budget == 0:
+            solver_status = (
+                "OPTIMAL_PROVEN"
+                if all(
+                    candidate[0]["status"] == "OPTIMAL_PROVEN"
+                    for candidate in candidates
+                )
+                else "FEASIBLE_UNPROVEN"
+            )
+        elif candidates:
+            candidate_statuses = {candidate[0]["status"] for candidate in candidates}
+            if candidate_statuses <= {
+                "OPTIMAL_PROVEN",
+                "OPTIMAL_WITHIN_REALIZATION_SET",
+            }:
+                solver_status = "OPTIMAL_WITHIN_REALIZATION_SET"
+            elif candidate_statuses == {"LOCAL_OPTIMUM"}:
+                solver_status = "LOCAL_OPTIMUM"
+            else:
+                solver_status = "VALIDATED_FEASIBLE"
+        elif "UNKNOWN_NO_SOLUTION_FOUND" in statuses:
+            solver_status = "SEARCH_EXHAUSTED_WITHOUT_PLAN"
+        elif statuses and all(status == "INFEASIBLE_PROVEN" for status in statuses):
+            solver_status = "NO_REALIZATION_FOR_LEVEL"
+        else:
+            solver_status = statuses[0] if statuses else "NOT_RUN"
         return {
-            "solver_status": optimized["status"],
-            "proof": optimized["proof"],
+            "purchase_budget": purchase_budget,
+            "solver_status": solver_status,
+            "optimality_scope": (
+                "eligible_owned_items"
+                if purchase_budget == 0
+                else "bounded_residual_realization_branches"
+            ),
             "candidate_count": len(candidates),
+            "branch_count": branch_count,
+            "generated_column_count": generated_column_count,
+            "modeled_domain_count": modeled_domain_count,
+            "elapsed_seconds": round(float(elapsed_seconds), 3),
             "best_rating_vector": best["rating_vector"] if best else None,
             "best_chemistry": best["chemistry"] if best else None,
         }
@@ -720,7 +1003,7 @@ class SbcService:
         candidate,
         *,
         plan_type,
-        purchase_budget_cap,
+        purchase_budget,
         solution_id=None,
     ):
         owned_item_ids = [
@@ -777,7 +1060,7 @@ class SbcService:
         return {
             "plan_id": "plan-" + hashlib.sha256(identity.encode("utf-8")).hexdigest()[:24],
             "plan_type": plan_type,
-            "purchase_budget_cap": purchase_budget_cap,
+            "purchase_budget": purchase_budget,
             "purchase_count": len(purchase_targets),
             "owned_count": len(owned_item_ids),
             "owned_item_ids": owned_item_ids,
@@ -799,9 +1082,8 @@ class SbcService:
                 "objective": "complete_descending_rating_vector",
                 "candidate_domain": {
                     "club_only": "eligible_owned_items",
-                    "market_benchmark": "eligible_priced_market_cards",
-                }.get(plan_type, "eligible_owned_and_priced_market_cards"),
-                "purchase_limit": purchase_budget_cap,
+                }.get(plan_type, "bounded_residual_realization_branch"),
+                "purchase_count": purchase_budget,
             },
             "proof": candidate["proof"],
             "snapshot_refs": {
@@ -834,8 +1116,8 @@ class SbcService:
                 for row in plan["slots"]
             )
             current = by_structure.get(key)
-            if current is None or plan["purchase_budget_cap"] < current[
-                "purchase_budget_cap"
+            if current is None or plan["purchase_budget"] < current[
+                "purchase_budget"
             ]:
                 by_structure[key] = plan
         return sorted(
@@ -992,6 +1274,22 @@ class SbcService:
             "constraint_results": constraint_results,
             "failures": failures,
         }
+
+    @staticmethod
+    def _normalize_purchase_budget(value, player_count):
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise FC27Error(
+                "SBC_PURCHASE_BUDGET_INVALID",
+                "purchase_budget must be an integer.",
+                recovery=f"Use an integer from 0 through {player_count}.",
+            )
+        if not 0 <= value <= player_count:
+            raise FC27Error(
+                "SBC_PURCHASE_BUDGET_INVALID",
+                f"purchase_budget {value} is outside this challenge's 0 through {player_count} range.",
+                recovery=f"Use an integer from 0 through {player_count}.",
+            )
+        return value
 
     @staticmethod
     def _normalize_objective(objective):

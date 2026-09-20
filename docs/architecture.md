@@ -29,7 +29,7 @@ fc27d
 
 `ContentModule` normalizes objective groups/tasks, account evolution slots, FUT.GG public evolutions and SBC summaries behind one discovery interface.
 
-`SbcModule` owns captured requirement normalization, EA-native fillable field-slot layouts, Agent-required exact item constraints, bounded OR-Tools CP-SAT optimization, solution persistence and independent validation. Its interface remains one `sbc_solve` operation; model construction, objective scaling, no-good cuts and status mapping stay inside the module. The Agent selects which candidate to use.
+`SbcModule` owns captured requirement normalization, EA-native fillable field-slot layouts, Agent-required exact item constraints, incremental purchase-budget branching, residual market-column generation, bounded OR-Tools CP-SAT realization, owned-only solution persistence and independent validation. Its interface remains one `sbc_solve` operation with a zero-default `purchase_budget`; model construction, frontier reduction, proof scope and status mapping stay inside the module. The Agent selects which candidate to use and whether to request the next purchase level.
 
 `ExecutionModule` receives exact actions. It enforces policy, stale-state checks, idempotency and post-operation readback.
 

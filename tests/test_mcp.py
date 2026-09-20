@@ -247,6 +247,11 @@ class MCPTest(unittest.TestCase):
 
     def test_sbc_solve_schema_exposes_exact_required_item_ids(self):
         tool = next(value for value in TOOLS if value["name"] == "sbc_solve")
+        purchase_budget = tool["inputSchema"]["properties"]["purchase_budget"]
+        self.assertEqual(purchase_budget["minimum"], 0)
+        self.assertEqual(purchase_budget["maximum"], 11)
+        self.assertEqual(purchase_budget["default"], 0)
+        self.assertIn("zero", purchase_budget["description"].lower())
         objective = tool["inputSchema"]["properties"]["objective"]
         required = objective["properties"]["required_item_ids"]
         self.assertEqual(required["items"]["type"], "integer")
@@ -375,17 +380,21 @@ class MCPTest(unittest.TestCase):
                 objective,
                 max_solutions,
                 *,
+                purchase_budget,
                 reserved_item_ids,
             ):
                 captured["reserved_item_ids"] = reserved_item_ids
+                captured["purchase_budget"] = purchase_budget
                 return {"solution_count": 0, "solutions": []}
 
         self.daemon._sbc_service = lambda: CaptureService()
         response = self.daemon.call_tool(
-            "sbc_solve", {"set_id": "4", "challenge_id": "16"}
+            "sbc_solve",
+            {"set_id": "4", "challenge_id": "16", "purchase_budget": 2},
         )
         self.assertTrue(response["ok"])
         self.assertEqual(captured["reserved_item_ids"], [100])
+        self.assertEqual(captured["purchase_budget"], 2)
 
     def test_sbc_refresh_enriches_slots_from_live_formation_repository(self):
         self.daemon.bridge = IdentityBridge()

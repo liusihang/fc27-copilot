@@ -1012,7 +1012,7 @@ TOOLS = [
     ),
     tool(
         "sbc_solve",
-        "Read the current active squad, then plan and persist exact owned-item candidates for one persisted set_id and challenge_id. Use after sbc_refresh and a complete club sync. Special cards, Evolution cards, active-squad items, protected items, loans, and explicit exclusions are unavailable. Resolve mandatory players through club_query and pass item_id values. The planner strictly minimizes the complete descending rating vector, then owned-source and value costs, and reports whether each optimality claim is proven. Unsupported constraints block solving. It never saves or submits to EA.",
+        "Read the current active squad and plan one persisted SBC challenge. Call with purchase_budget=0 first to use only eligible owned items without loading market prices. If the user rejects those plans, increase purchase_budget; the planner computes every level through that exact number of purchases, reuses the preceding frontier, and searches only residual market roles. Plans minimize the complete descending rating vector before source and value costs. Resolve mandatory owned players through club_query and pass item_id values. Hybrid plans contain estimated FUT.GG purchase targets and require market_search before buying. Optimality is reported only for the modeled realization branch. The tool never buys, saves, or submits to EA.",
         object_schema(
             {
                 "set_id": described(
@@ -1024,14 +1024,23 @@ TOOLS = [
                     "SBC challenge identity from sbc_query.",
                 ),
                 "objective": SBC_OBJECTIVE_SCHEMA,
+                "purchase_budget": described(
+                    {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 11,
+                        "default": 0,
+                    },
+                    "Exact market-card count for the highest requested planning level. Zero returns owned-only plans and does not load market prices. Increase it only after the user asks to compare plans requiring more purchases.",
+                ),
                 "max_solutions": described(
                     {
                         "type": "integer",
                         "minimum": 1,
                         "maximum": 10,
-                        "default": 5,
+                        "default": 3,
                     },
-                    "Maximum validated solutions to persist and return.",
+                    "Maximum validated plans retained at each purchase level. Only zero-purchase plans are persisted as executable solutions.",
                 ),
             },
             ["set_id", "challenge_id"],

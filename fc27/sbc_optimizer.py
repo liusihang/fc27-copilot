@@ -63,7 +63,17 @@ class SbcOptimizer:
         self.time_limit_seconds = float(time_limit_seconds)
         self.search_workers = max(1, int(search_workers))
 
-    def solve(self, challenge, items, objective, max_solutions):
+    def solve(
+        self,
+        challenge,
+        items,
+        objective,
+        max_solutions,
+        *,
+        exact_purchase_count=None,
+        fixed_item_ids=None,
+        hint_slot_item_ids=None,
+    ):
         slot_count = int(challenge.get("player_count") or len(challenge["slots"]))
         model = cp_model.CpModel()
         selected = [model.new_bool_var(f"item_{row['item_id']}") for row in items]
@@ -92,6 +102,8 @@ class SbcOptimizer:
         }
         for item_id in objective.get("required_item_ids", []):
             model.add(selected[indexes_by_item_id[int(item_id)]] == 1)
+        for item_id in fixed_item_ids or []:
+            model.add(selected[indexes_by_item_id[int(item_id)]] == 1)
 
         tradeable_value = sum(
             selected[index] * int(row.get("tradeable_value") or 0)
@@ -104,8 +116,8 @@ class SbcOptimizer:
             for index, row in enumerate(items)
             if row.get("source") == "market"
         )
-        if objective.get("max_purchase_count") is not None:
-            model.add(purchase_count <= int(objective["max_purchase_count"]))
+        if exact_purchase_count is not None:
+            model.add(purchase_count == int(exact_purchase_count))
 
         self._add_challenge_constraints(
             model,
@@ -114,6 +126,14 @@ class SbcOptimizer:
             challenge,
             slot_count,
             chemistry_model,
+        )
+        self._add_solution_hint(
+            model,
+            selected,
+            in_position,
+            items,
+            challenge["slots"][:slot_count],
+            hint_slot_item_ids,
         )
         deadline = time.monotonic() + self.time_limit_seconds
         histograms = self._rating_histograms(model, selected, items, slot_count)
@@ -282,6 +302,34 @@ class SbcOptimizer:
             },
             "solutions": solutions,
         }
+
+    @staticmethod
+    def _add_solution_hint(
+        model, selected, in_position, items, slots, hint_slot_item_ids
+    ):
+        if not hint_slot_item_ids or len(hint_slot_item_ids) != len(slots):
+            return
+        hinted_slot_by_item = {
+            int(item_id): slot_index
+            for slot_index, item_id in enumerate(hint_slot_item_ids)
+        }
+        available_ids = {int(row["item_id"]) for row in items}
+        if not set(hinted_slot_by_item).issubset(available_ids):
+            return
+        for item_index, row in enumerate(items):
+            item_id = int(row["item_id"])
+            chosen = item_id in hinted_slot_by_item
+            model.add_hint(selected[item_index], 1 if chosen else 0)
+            if in_position is None:
+                continue
+            if not chosen:
+                model.add_hint(in_position[item_index], 0)
+                continue
+            slot = str(slots[hinted_slot_by_item[item_id]]).upper()
+            positions = {
+                str(value).upper() for value in row.get("positions") or []
+            }
+            model.add_hint(in_position[item_index], 1 if slot in positions else 0)
 
     def _solve_model(self, model, deadline):
         remaining = deadline - time.monotonic()

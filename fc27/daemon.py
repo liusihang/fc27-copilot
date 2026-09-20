@@ -452,7 +452,8 @@ class FC27Daemon:
                         arguments.get("set_id"),
                         arguments.get("challenge_id"),
                         arguments.get("objective") or {},
-                        arguments.get("max_solutions", 5),
+                        arguments.get("max_solutions", 3),
+                        purchase_budget=arguments.get("purchase_budget", 0),
                         reserved_item_ids=self._active_squad_item_ids(),
                     ),
                 )

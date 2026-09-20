@@ -144,7 +144,7 @@ Reads current SBC state from the authenticated Web App, normalizes and persists 
 
 ### `FC27:sbc_solve`
 
-Reads the current active squad, then returns club-only, at-most-one-purchase, at-most-two-purchase, and market-benchmark plans with OR-Tools CP-SAT. Protected, loan, stale, duplicate, Tradepile, special, Evolution, active-squad, and explicitly excluded owned items are rejected. Market candidates come from the complete challenge-compatible ordinary-card catalog and a current FUT.GG platform price snapshot; cards with missing, extinct, non-market, SBC, or objective prices are unavailable. Active-squad protection covers starters, substitutes, and reserves and is rechecked before save or submission. Every candidate is independently revalidated. Only all-owned plans are persisted as executable SBC solutions. Hybrid plans keep owned `item_id` and purchase `card_ea_id` identities separate and require live EA market verification. The planner strictly minimizes the complete descending rating vector, then purchase count, owned tradeable count, owned opportunity cost, purchase cost, and deterministic identity. Results distinguish `OPTIMAL_PROVEN`, `FEASIBLE_UNPROVEN`, `INFEASIBLE_PROVEN`, and `UNKNOWN_NO_SOLUTION_FOUND` and never buy, save, or submit.
+Reads the current active squad and solves one persisted challenge through incremental purchase levels. `purchase_budget=0` returns owned-only plans without loading market prices. A positive budget computes every exact level through that number, keeps selected market cards from the preceding frontier, generates residual market roles, and exhausts the single-market-replacement neighborhood. CP-SAT is the fallback when that neighborhood has no valid plan. Protected, loan, stale, duplicate, Tradepile, special, Evolution, active-squad, and explicitly excluded owned items are rejected. Missing, extinct, non-market, SBC, or objective market cards are unavailable. Only zero-purchase plans are persisted as executable SBC solutions. Hybrid plans keep owned `item_id` and purchase `card_ea_id` identities separate and require live EA market verification. `LOCAL_OPTIMUM` refers to the declared replacement neighborhood; CP-SAT optimality covers only the reported realization branch. The tool never buys, saves, or submits.
 
 The Agent can require concrete owned items:
 
@@ -152,6 +152,7 @@ The Agent can require concrete owned items:
 {
   "set_id": "4",
   "challenge_id": "16",
+  "purchase_budget": 0,
   "objective": {
     "required_item_ids": [800013],
     "exclude_item_ids": [],
@@ -172,7 +173,7 @@ Supported objective fields are:
 - `max_tradeable_value`: hard upper bound for selected tradeable opportunity cost;
 - `max_item_overall`: preserve cards above a caller-selected overall.
 
-The response contains persisted all-owned `solutions`, a maximum of ten deduplicated `plans`, per-budget `budget_analysis`, one optional `market_benchmark`, catalog/price coverage counts, and `actions_performed=[]`. Each plan reports its complete rating vector, chemistry, normalized constraint evidence, exact slots, owned items, missing market cards, estimated purchase cost, proof scope, execution readiness, and whether live EA market verification is required.
+The response contains persisted zero-purchase `solutions`, bounded `plans` for every computed purchase level, per-budget `budget_analysis`, catalog/price/column/domain coverage counts, and `actions_performed=[]`. Each plan reports its exact `purchase_budget`, complete rating vector, chemistry, normalized constraint evidence, exact slots, owned items, missing market cards, estimated purchase cost, realization scope, execution readiness, and whether live EA market verification is required. The Agent normally calls budget zero first and increases it only after the user asks for another comparison.
 
 ### `FC27:execute_actions`
 
