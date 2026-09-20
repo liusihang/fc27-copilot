@@ -1857,11 +1857,14 @@
       squad.setPlayers(items, true);
       const placedSlotIndices = savedSbcSlotIndices(squad);
       const placedItemIds = savedSbcItemIds(squad);
+      const expectedItemIds = (params.item_ids || []).map(Number);
+      const slotPlacementMatches = placedSlotIndices.length === expectedSlotIndices.length
+        && placedSlotIndices.every((slotIndex, index) => slotIndex === expectedSlotIndices[index]);
+      const itemPlacementMatches = placedItemIds.length === expectedItemIds.length
+        && placedItemIds.every((itemId, index) => itemId === expectedItemIds[index]);
       if (
-        placedSlotIndices.length !== expectedSlotIndices.length
-        || placedSlotIndices.some((slotIndex, index) => slotIndex !== expectedSlotIndices[index])
-        || placedItemIds.length !== items.length
-        || placedItemIds.some((itemId, index) => itemId !== Number(params.item_ids[index]))
+        !slotPlacementMatches
+        || !itemPlacementMatches
       ) {
         throw Object.assign(new Error('EA did not place the SBC items into the expected fillable slots.'), {
           code: 'SBC_SLOT_PLACEMENT_MISMATCH',
@@ -1869,6 +1872,9 @@
             placed_slot_indices: placedSlotIndices,
             expected_slot_indices: expectedSlotIndices,
             placed_item_ids: placedItemIds,
+            expected_item_ids: expectedItemIds,
+            slot_placement_matches: slotPlacementMatches,
+            item_placement_matches: itemPlacementMatches,
           },
         });
       }

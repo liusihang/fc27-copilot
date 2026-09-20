@@ -124,7 +124,8 @@ class SbcService:
         solutions = []
         by_item_id = {int(row["item_id"]): row for row in items}
         for candidate in optimized["solutions"]:
-            selected = [by_item_id[item_id] for item_id in candidate["item_ids"]]
+            ordered_item_ids = candidate.get("slot_item_ids") or candidate["item_ids"]
+            selected = [by_item_id[item_id] for item_id in ordered_item_ids]
             validation = self.validate(challenge, selected, objective)
             if not validation["valid"]:
                 raise FC27Error(

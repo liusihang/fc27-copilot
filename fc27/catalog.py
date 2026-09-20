@@ -98,7 +98,19 @@ class CatalogDB:
                     WHERE c.card_ea_id IN ({placeholders})""",
                 card_ea_ids,
             ).fetchall()
-        return {int(row["card_ea_id"]): dict(row) for row in rows}
+            positions = {}
+            for row in connection.execute(
+                f"""SELECT cp.card_ea_id, pos.code
+                    FROM card_positions cp JOIN positions pos USING(position_id)
+                    WHERE cp.card_ea_id IN ({placeholders})
+                    ORDER BY cp.card_ea_id, cp.is_primary DESC, pos.code""",
+                card_ea_ids,
+            ):
+                positions.setdefault(int(row[0]), []).append(row[1])
+        facts = {int(row["card_ea_id"]): dict(row) for row in rows}
+        for card_ea_id, value in facts.items():
+            value["positions"] = positions.get(card_ea_id, [])
+        return facts
 
     def query(self, request):
         request = request or {}

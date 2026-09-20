@@ -43,6 +43,14 @@ class SbcOptimizer:
         model = cp_model.CpModel()
         selected = [model.new_bool_var(f"item_{row['item_id']}") for row in items]
         model.add(sum(selected) == slot_count)
+        slot_assignments = None
+        if (
+            any(row.get("positions") for row in items)
+            and any(not str(slot).startswith("ITEM_") for slot in challenge.get("slots") or [])
+        ):
+            slot_assignments = self._add_slot_assignments(
+                model, selected, items, challenge, slot_count
+            )
 
         indexes_by_item_id = {
             int(row["item_id"]): index for index, row in enumerate(items)
@@ -88,10 +96,16 @@ class SbcOptimizer:
             ]
             chosen_items = [items[index] for index in chosen_indexes]
             chosen_items.sort(key=lambda row: int(row["item_id"]))
+            slot_item_ids = (
+                self._slot_item_ids(solver, slot_assignments, items, slot_count)
+                if slot_assignments is not None
+                else [int(row["item_id"]) for row in chosen_items]
+            )
             solutions.append(
                 {
                     "status": terminal_status,
                     "item_ids": [int(row["item_id"]) for row in chosen_items],
+                    "slot_item_ids": slot_item_ids,
                     "objective_value": int(round(solver.objective_value)),
                     "objective_components": self._objective_components(chosen_items),
                     "wall_time_seconds": solver.wall_time,
@@ -104,6 +118,42 @@ class SbcOptimizer:
             "complete": terminal_status == "infeasible",
             "solutions": solutions,
         }
+
+    @staticmethod
+    def _add_slot_assignments(model, selected, items, challenge, slot_count):
+        slots = list(challenge.get("slots") or [])[:slot_count]
+        assignments = [
+            [
+                model.new_bool_var(f"assignment_{item_index}_{slot_index}")
+                for slot_index in range(slot_count)
+            ]
+            for item_index in range(len(items))
+        ]
+        for item_index, row in enumerate(items):
+            model.add(sum(assignments[item_index]) == selected[item_index])
+            positions = {str(value).upper() for value in row.get("positions") or []}
+            for slot_index, slot in enumerate(slots):
+                slot_name = str(slot).upper()
+                if positions and slot_name not in positions:
+                    model.add(assignments[item_index][slot_index] == 0)
+        for slot_index in range(slot_count):
+            model.add(
+                sum(assignments[item_index][slot_index] for item_index in range(len(items)))
+                == 1
+            )
+        return assignments
+
+    @staticmethod
+    def _slot_item_ids(solver, assignments, items, slot_count):
+        slot_item_ids = []
+        for slot_index in range(slot_count):
+            item_index = next(
+                item_index
+                for item_index in range(len(items))
+                if solver.value(assignments[item_index][slot_index])
+            )
+            slot_item_ids.append(int(items[item_index]["item_id"]))
+        return slot_item_ids
 
     def _add_challenge_constraints(self, model, selected, items, challenge, slot_count):
         for index, constraint in enumerate(challenge["constraints"]):

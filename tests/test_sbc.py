@@ -290,6 +290,48 @@ class SbcServiceTest(unittest.TestCase):
         result = self.service.solve("4", challenge["challenge_id"], {}, max_solutions=1)
         self.assertTrue(result["solutions"][0]["validation"]["valid"])
 
+    def test_solver_assigns_cards_to_formation_slots(self):
+        payload = challenge_payload()
+        payload["challenges"][0]["formation"] = "f442"
+        captured = self.service.capture_challenges(payload)
+        challenge = captured["challenges"][0]
+        positions = [
+            "ST",
+            "GK",
+            "LB",
+            "CB",
+            "CB",
+            "RB",
+            "LM",
+            "CM",
+            "CM",
+            "RM",
+            "ST",
+        ]
+        for item_id, position in enumerate(positions, start=1):
+            self.service.catalog.facts[1000 + item_id]["positions"] = [position]
+        result = self.service.solve(
+            "4",
+            challenge["challenge_id"],
+            {"candidate_item_ids": list(range(1, 12))},
+            max_solutions=1,
+        )
+        solution = result["solutions"][0]
+        self.assertEqual(set(solution["item_ids"]), set(range(1, 12)))
+        self.assertEqual(
+            [slot["position"] for slot in solution["slots"]],
+            challenge["slots"],
+        )
+        positions_by_item = {
+            item_id: position for item_id, position in enumerate(positions, start=1)
+        }
+        self.assertTrue(
+            all(
+                positions_by_item[slot["item_id"]] == slot["position"]
+                for slot in solution["slots"]
+            )
+        )
+
     def test_brick_challenge_uses_requirement_count_instead_of_formation_size(self):
         captured = self.service.capture_challenges(
             brick_challenge_payload(1, maximum=64)
