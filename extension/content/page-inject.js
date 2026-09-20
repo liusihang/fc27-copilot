@@ -636,6 +636,24 @@
   }
 
   function sbcSlotMetadata(challenge, detailPayload = null, squad = null) {
+    const squadPlayers = collectionValues(
+      typeof squad?.getPlayers === 'function' ? squad.getPlayers() : squad?.players
+    );
+    const slotPositions = squadPlayers.slice(0, 11).map((entry, fallbackIndex) => {
+      const normalized = plainSquadSlot(entry) || {};
+      const rawPosition = readValue(entry, ['position', 'positionId'], ['getPosition']);
+      const rawPositionName = rawPosition && typeof rawPosition === 'object'
+        ? readValue(rawPosition, ['name', 'displayName'], ['getName', 'getDisplayName'])
+        : rawPosition;
+      return {
+        slot_index: Number(readValue(entry, ['index', 'slotIndex'], ['getIndex']) ?? fallbackIndex),
+        position_id: normalized.position_id ?? (Number.isFinite(Number(rawPosition)) ? Number(rawPosition) : null),
+        position_name: normalized.position_name
+          || (typeof rawPositionName === 'string' ? rawPositionName : null),
+        general_position: normalized.general_position ?? null,
+        general_position_name: normalized.general_position_name ?? null,
+      };
+    }).filter((entry) => Number.isInteger(entry.slot_index) && entry.slot_index >= 0 && entry.slot_index < 11);
     const slotRequirements = [
       detailPayload?.playerRequirements,
       detailPayload?.playerrequirements,
@@ -665,6 +683,8 @@
           slot_indices: slotIndices,
           slot_indices_source: 'ea_player_requirements',
           slot_requirements: plainValue(slotRequirements, 0, new WeakSet(), 8),
+          slot_positions: slotPositions,
+          slot_positions_source: slotPositions.length ? 'ea_squad_slots' : null,
         };
       }
     }
@@ -682,12 +702,16 @@
           .filter((index) => !bricks.has(index)),
         slot_indices_source: 'ea_simple_brick_indices',
         slot_requirements: null,
+        slot_positions: slotPositions,
+        slot_positions_source: slotPositions.length ? 'ea_squad_slots' : null,
       };
     }
     return {
       slot_indices: null,
       slot_indices_source: null,
       slot_requirements: null,
+      slot_positions: slotPositions,
+      slot_positions_source: slotPositions.length ? 'ea_squad_slots' : null,
     };
   }
 
@@ -715,6 +739,8 @@
       slot_indices: slotMetadata.slot_indices,
       slot_indices_source: slotMetadata.slot_indices_source,
       slot_requirements: slotMetadata.slot_requirements,
+      slot_positions: slotMetadata.slot_positions,
+      slot_positions_source: slotMetadata.slot_positions_source,
       formation: plainValue(readValue(challenge, ['formation', 'formationData']), 0, new WeakSet(), 8),
       slots: plainValue(readValue(challenge, ['slots', 'squadSlots', 'positions']), 0, new WeakSet(), 8),
       rewards: plainValue(readValue(challenge, ['rewards', 'awards']), 0, new WeakSet(), 8),

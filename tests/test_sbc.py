@@ -77,6 +77,10 @@ def brick_challenge_payload(
                 "challenge_type": "BRICK_CHALLENGE",
                 "slot_indices": slot_indices,
                 "formation": "f433",
+                "slots": [
+                    "GK", "LB", "CB", "CB", "RB", "CM",
+                    "CM", "CM", "LW", "RW", "ST",
+                ],
                 "rewards": [],
                 "requirements": requirements,
                 "raw": {"id": player_count, "formation": "f433", "type": "BRICK_CHALLENGE"},
@@ -106,6 +110,10 @@ def challenge_payload(requirements=None):
                 "completed": False,
                 "slot_indices": list(range(11)),
                 "formation": "f41212",
+                "slots": [
+                    "GK", "LB", "CB", "CB", "RB", "CDM",
+                    "CM", "CM", "CAM", "ST", "ST",
+                ],
                 "rewards": [],
                 "requirements": requirements or [bronze_requirement()],
                 "raw": {"id": 16, "formation": "f41212"},
@@ -285,7 +293,7 @@ class SbcServiceTest(unittest.TestCase):
             challenge_payload([specific_requirement(4, [4], 4, scope=0)])
         )
         challenge = captured["challenges"][0]
-        self.assertEqual(challenge["constraints"][0]["type"], "same_nation_min")
+        self.assertEqual(challenge["constraints"][0]["type"], "same_nation_count")
         for item_id in range(1, 14):
             self.service.catalog.facts[1000 + item_id].update(
                 {
@@ -324,6 +332,10 @@ class SbcServiceTest(unittest.TestCase):
     def test_solver_assigns_cards_to_formation_slots(self):
         payload = challenge_payload()
         payload["challenges"][0]["formation"] = "f442"
+        payload["challenges"][0]["slots"] = [
+            "GK", "RB", "CB", "CB", "LB", "RM",
+            "CM", "CM", "LM", "ST", "ST",
+        ]
         captured = self.service.capture_challenges(payload)
         challenge = captured["challenges"][0]
         self.assertEqual(
@@ -376,6 +388,7 @@ class SbcServiceTest(unittest.TestCase):
         for formation, slots in expected.items():
             payload = challenge_payload()
             payload["challenges"][0]["formation"] = formation
+            payload["challenges"][0]["slots"] = slots
             captured = self.service.capture_challenges(payload)
             self.assertEqual(captured["challenges"][0]["slots"], slots)
 
@@ -567,6 +580,86 @@ class SbcServiceTest(unittest.TestCase):
             context.exception.details["unsupported_constraints"][0]["reason"],
             "unknown requirement key 999",
         )
+
+    def test_requirement_key_registry_matches_current_web_app_enum(self):
+        cases = [
+            (4, [4], -1, 0, "same_nation_count"),
+            (5, [4], -1, 0, "same_league_count"),
+            (6, [3], -1, 1, "same_club_count"),
+            (7, [2], -1, 0, "nation_count"),
+            (8, [6], -1, 1, "league_count"),
+            (9, [3], -1, 1, "club_count"),
+            (10, [38], 2, 0, "specific_nation_count"),
+            (11, [53], 2, 0, "specific_league_count"),
+            (12, [240, 243], 2, 0, "specific_club_count"),
+            (17, [3], 1, 0, "quality_count"),
+            (19, [75], -1, 0, "team_rating"),
+            (26, [75], 4, 0, "overall_count"),
+            (27, [75], 4, 2, "overall_count"),
+            (28, [75], 4, 0, "overall_count"),
+            (35, [26], -1, 0, "chemistry"),
+            (36, [2], -1, 0, "all_players_chemistry_points"),
+        ]
+        for key, values, count, scope, expected_type in cases:
+            with self.subTest(key=key, scope=scope):
+                constraints, unsupported = self.service._normalize_requirements(
+                    [specific_requirement(key, values, count, scope)]
+                )
+                self.assertEqual(unsupported, [])
+                self.assertEqual(constraints[0]["type"], expected_type)
+
+    def test_known_unsupported_requirement_reports_web_app_enum_name(self):
+        constraints, unsupported = self.service._normalize_requirements(
+            [specific_requirement(18, [12], 1, 0)]
+        )
+        self.assertEqual(constraints, [])
+        self.assertEqual(
+            unsupported[0]["reason"],
+            "known unsupported requirement PLAYER_RARITY (18)",
+        )
+
+    def test_explicit_slot_positions_are_authoritative_over_formation_name(self):
+        payload = challenge_payload()
+        challenge = payload["challenges"][0]
+        challenge["formation"] = "f999"
+        challenge["slots"] = [
+            "GK", "RB", "CB", "CB", "LB", "RM",
+            "CM", "LM", "CAM", "CAM", "ST",
+        ]
+        normalized = self.service.capture_challenges(payload)["challenges"][0]
+        self.assertEqual(normalized["slots"], challenge["slots"])
+        self.assertEqual(normalized["slot_positions_source"], "challenge.slots")
+
+    def test_completed_refresh_retains_previous_exact_slot_contract(self):
+        first = challenge_payload()
+        first_challenge = first["challenges"][0]
+        captured = self.service.capture_challenge(
+            {"set": first["set"], "challenge": first_challenge}
+        )["challenge"]
+        self.assertEqual(captured["slot_indices"], list(range(11)))
+
+        refreshed = challenge_payload()
+        value = refreshed["challenges"][0]
+        value.update(
+            {
+                "status": "COMPLETED",
+                "completed": True,
+                "player_count": None,
+                "slot_indices": None,
+                "slots": None,
+                "slot_layout_error": {
+                    "code": 466,
+                    "status": 403,
+                    "message": "completed challenge unavailable",
+                },
+            }
+        )
+        retained = self.service.capture_challenge(
+            {"set": refreshed["set"], "challenge": value}
+        )["challenge"]
+        self.assertEqual(retained["slot_indices"], list(range(11)))
+        self.assertEqual(retained["slots"], first_challenge["slots"])
+        self.assertEqual(retained["slot_indices_source"], "persisted_ea_slot_contract")
 
 
 if __name__ == "__main__":

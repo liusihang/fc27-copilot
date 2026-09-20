@@ -11,18 +11,34 @@ from .sbc_optimizer import QUALITY_RANKS, SbcOptimizer, chemistry_score
 SCOPE_OPERATORS = {0: "min", 1: "max", 2: "exact"}
 QUALITY_VALUES = {1: "bronze", 2: "silver", 3: "gold"}
 VARIABLE_SQUAD_CHALLENGE_TYPES = {"BRICK_CHALLENGE", "CUSTOM_BRICK_CHALLENGE"}
-FORMATION_SLOTS = {
-    "f433": ("GK", "LB", "CB", "CB", "RB", "CM", "CM", "CM", "LW", "RW", "ST"),
-    "f41212": ("GK", "LB", "CB", "CB", "RB", "CDM", "CM", "CM", "CAM", "ST", "ST"),
-    "f4222": ("GK", "LB", "CB", "CB", "RB", "CDM", "CDM", "CAM", "CAM", "ST", "ST"),
-    "f424": ("GK", "LB", "CB", "CB", "RB", "CM", "CM", "LW", "RW", "ST", "ST"),
-    "f442": ("GK", "RB", "CB", "CB", "LB", "RM", "CM", "CM", "LM", "ST", "ST"),
-    "f451": ("GK", "RB", "CB", "CB", "LB", "RM", "CM", "LM", "CAM", "CAM", "ST"),
-    "f532": ("GK", "RB", "CB", "CB", "CB", "LB", "CDM", "CM", "CM", "ST", "ST"),
-    "f5212": ("GK", "RB", "CB", "CB", "CB", "LB", "CM", "CM", "CAM", "ST", "ST"),
-    "f343": ("GK", "CB", "CB", "CB", "LM", "CM", "CM", "RM", "LW", "RW", "ST"),
-    "f4141": ("GK", "LB", "CB", "CB", "RB", "CDM", "LM", "CM", "RM", "ST", "ST"),
-    "f3142": ("GK", "CB", "CB", "CB", "CDM", "LM", "CM", "RM", "CAM", "ST", "ST"),
+REQUIREMENT_KEY_SPECS = {
+    0: {"name": "TEAM_STAR_RATING", "family": "unsupported"},
+    2: {"name": "PLAYER_COUNT", "family": "scalar", "type": "player_count"},
+    3: {"name": "PLAYER_QUALITY", "family": "squad_quality"},
+    4: {"name": "SAME_NATION_COUNT", "family": "same", "type": "same_nation_count"},
+    5: {"name": "SAME_LEAGUE_COUNT", "family": "same", "type": "same_league_count"},
+    6: {"name": "SAME_CLUB_COUNT", "family": "same", "type": "same_club_count"},
+    7: {"name": "NATION_COUNT", "family": "scalar", "type": "nation_count"},
+    8: {"name": "LEAGUE_COUNT", "family": "scalar", "type": "league_count"},
+    9: {"name": "CLUB_COUNT", "family": "scalar", "type": "club_count"},
+    10: {"name": "NATION_ID", "family": "specific", "type": "specific_nation_count", "ids": "nation_ids"},
+    11: {"name": "LEAGUE_ID", "family": "specific", "type": "specific_league_count", "ids": "league_ids"},
+    12: {"name": "CLUB_ID", "family": "specific", "type": "specific_club_count", "ids": "club_ids"},
+    13: {"name": "SCOPE", "family": "unsupported"},
+    15: {"name": "LEGEND_COUNT", "family": "unsupported"},
+    16: {"name": "NUM_TROPHY_REQUIRED", "family": "unsupported"},
+    17: {"name": "PLAYER_LEVEL", "family": "quality_count"},
+    18: {"name": "PLAYER_RARITY", "family": "unsupported"},
+    19: {"name": "TEAM_RATING", "family": "scalar", "type": "team_rating"},
+    21: {"name": "PLAYER_COUNT_COMBINED", "family": "unsupported"},
+    25: {"name": "PLAYER_RARITY_GROUP", "family": "unsupported"},
+    26: {"name": "PLAYER_MIN_OVR", "family": "overall_count", "overall_operator": "min"},
+    27: {"name": "PLAYER_EXACT_OVR", "family": "overall_count", "overall_operator": "exact"},
+    28: {"name": "PLAYER_MAX_OVR", "family": "overall_count", "overall_operator": "max"},
+    30: {"name": "FIRST_OWNER_PLAYERS_COUNT", "family": "unsupported"},
+    33: {"name": "PLAYER_TRADABILITY", "family": "unsupported"},
+    35: {"name": "CHEMISTRY_POINTS", "family": "scalar", "type": "chemistry"},
+    36: {"name": "ALL_PLAYERS_CHEMISTRY_POINTS", "family": "scalar", "type": "all_players_chemistry_points"},
 }
 OBJECTIVE_KEYS = {
     "candidate_item_ids",
@@ -56,7 +72,9 @@ class SbcService:
         observed_at = utc_now()
         normalized_set = self._normalize_set(payload["set"], observed_at)
         challenges = [
-            self._normalize_challenge(value, normalized_set["set_id"], observed_at)
+            self._retain_cached_slot_contract(
+                self._normalize_challenge(value, normalized_set["set_id"], observed_at)
+            )
             for value in payload.get("challenges") or []
         ]
         self.runtime.upsert_sbc_sets([normalized_set])
@@ -74,8 +92,10 @@ class SbcService:
     def capture_challenge(self, payload, include_raw=True):
         observed_at = utc_now()
         normalized_set = self._normalize_set(payload["set"], observed_at)
-        challenge = self._normalize_challenge(
-            payload["challenge"], normalized_set["set_id"], observed_at
+        challenge = self._retain_cached_slot_contract(
+            self._normalize_challenge(
+                payload["challenge"], normalized_set["set_id"], observed_at
+            )
         )
         self.runtime.upsert_sbc_sets([normalized_set])
         self.runtime.upsert_sbc_challenges([challenge])
@@ -518,18 +538,34 @@ class SbcService:
                     int(row["overall"]) >= int(constraint["overall"])
                     for row in items
                 )
+            if constraint["overall_operator"] == "max":
+                return sum(
+                    int(row["overall"]) <= int(constraint["overall"])
+                    for row in items
+                )
             return sum(
-                int(row["overall"]) <= int(constraint["overall"])
+                int(row["overall"]) == int(constraint["overall"])
                 for row in items
             )
-        if kind == "specific_nation_count":
-            return sum(row.get("nation_id") == constraint["nation_id"] for row in items)
-        if kind == "specific_league_count":
-            return sum(row.get("league_id") == constraint["league_id"] for row in items)
-        if kind == "specific_club_count":
-            return sum(row.get("club_id") in constraint["club_ids"] for row in items)
-        if kind == "same_nation_min":
-            return metrics["same_nation_max"]
+        if kind in (
+            "specific_nation_count",
+            "specific_league_count",
+            "specific_club_count",
+        ):
+            attribute, ids_key = {
+                "specific_nation_count": ("nation_id", "nation_ids"),
+                "specific_league_count": ("league_id", "league_ids"),
+                "specific_club_count": ("club_id", "club_ids"),
+            }[kind]
+            return sum(row.get(attribute) in constraint[ids_key] for row in items)
+        if kind in ("same_nation_count", "same_league_count", "same_club_count"):
+            return metrics[
+                {
+                    "same_nation_count": "same_nation_max",
+                    "same_league_count": "same_league_max",
+                    "same_club_count": "same_club_max",
+                }[kind]
+            ]
         return metrics[kind]
 
     @staticmethod
@@ -624,12 +660,19 @@ class SbcService:
                     "error": slot_layout_error,
                 }
             )
+        slot_positions, slot_positions_source = self._resolve_slot_positions(
+            value, raw, slot_indices
+        )
         if player_count is None or not slot_indices:
             slots = []
-        elif formation in FORMATION_SLOTS:
-            slots = [FORMATION_SLOTS[formation][index] for index in slot_indices]
         else:
-            slots = [f"ITEM_{index + 1}" for index in range(player_count)]
+            by_index = {
+                int(position["slot_index"]): position for position in slot_positions
+            }
+            slots = [
+                by_index.get(index, {}).get("position_name") or f"ITEM_{index + 1}"
+                for index in slot_indices
+            ]
         return {
             "challenge_id": str(value["id"]),
             "set_id": str(value.get("set_id") or set_id),
@@ -645,6 +688,8 @@ class SbcService:
             "slot_indices": slot_indices,
             "slot_indices_source": slot_indices_source,
             "slot_layout_error": slot_layout_error,
+            "slot_positions": slot_positions,
+            "slot_positions_source": slot_positions_source,
             "formation": formation,
             "slots": slots,
             "rewards": value.get("rewards") or [],
@@ -805,6 +850,95 @@ class SbcService:
         return [], None, None
 
     @staticmethod
+    def _resolve_slot_positions(value, raw, slot_indices):
+        positions = value.get("slot_positions")
+        source = "challenge.slot_positions"
+        if positions is None:
+            positions = raw.get("slotPositions")
+            source = "raw.slotPositions"
+        if isinstance(positions, list):
+            normalized = []
+            for fallback_index, position in enumerate(positions):
+                if not isinstance(position, dict):
+                    continue
+                slot_index = position.get("slot_index", position.get("index", fallback_index))
+                try:
+                    slot_index = int(slot_index)
+                except (TypeError, ValueError):
+                    continue
+                if slot_index not in slot_indices:
+                    continue
+                position_name = (
+                    position.get("position_name")
+                    or position.get("general_position_name")
+                    or position.get("name")
+                )
+                raw_position = position.get("position")
+                if not position_name and isinstance(raw_position, str):
+                    position_name = raw_position
+                normalized.append(
+                    {
+                        "slot_index": slot_index,
+                        "position_id": position.get("position_id"),
+                        "position_name": str(position_name).upper() if position_name else None,
+                        "general_position": position.get("general_position"),
+                        "general_position_name": position.get("general_position_name"),
+                    }
+                )
+            if normalized:
+                normalized.sort(key=lambda row: row["slot_index"])
+                return normalized, source
+
+        slots = value.get("slots")
+        source = "challenge.slots"
+        if slots is None:
+            slots = raw.get("slots")
+            source = "raw.slots"
+        if isinstance(slots, list) and slot_indices:
+            normalized = []
+            for slot_index in slot_indices:
+                if slot_index >= len(slots):
+                    return [], None
+                position = slots[slot_index]
+                if not isinstance(position, str) or not position.strip():
+                    return [], None
+                normalized.append(
+                    {
+                        "slot_index": slot_index,
+                        "position_id": None,
+                        "position_name": position.strip().upper(),
+                        "general_position": None,
+                        "general_position_name": None,
+                    }
+                )
+            return normalized, source
+        return [], None
+
+    def _retain_cached_slot_contract(self, challenge):
+        if challenge.get("slot_indices"):
+            return challenge
+        existing = self.runtime.get_sbc_challenge(challenge["challenge_id"])
+        if (
+            existing is None
+            or not existing.get("slot_indices")
+            or str(existing.get("formation")) != str(challenge.get("formation"))
+        ):
+            return challenge
+        challenge["player_count"] = existing.get("player_count")
+        challenge["player_count_source"] = existing.get("player_count_source")
+        challenge["slot_indices"] = existing.get("slot_indices")
+        challenge["slot_indices_source"] = "persisted_ea_slot_contract"
+        challenge["slot_positions"] = existing.get("slot_positions") or []
+        challenge["slot_positions_source"] = existing.get("slot_positions_source")
+        challenge["slots"] = existing.get("slots") or []
+        challenge["unsupported_constraints"] = [
+            value
+            for value in challenge["unsupported_constraints"]
+            if value.get("type") not in ("player_count", "slot_indices")
+        ]
+        return challenge
+
+    @staticmethod
     def _normalize_requirements(requirements):
         constraints = []
         unsupported = []
@@ -815,10 +949,22 @@ class SbcService:
                 continue
             key_text, values = next(iter(collection.items()))
             key = int(key_text)
+            spec = REQUIREMENT_KEY_SPECS.get(key)
+            if spec is None:
+                unsupported.append({"raw": raw, "reason": f"unknown requirement key {key}"})
+                continue
+            if spec["family"] == "unsupported":
+                unsupported.append(
+                    {
+                        "raw": raw,
+                        "reason": f"known unsupported requirement {spec['name']} ({key})",
+                    }
+                )
+                continue
             if not isinstance(values, list) or not values:
                 unsupported.append({"raw": raw, "reason": "requirement must contain one or more values"})
                 continue
-            if key != 12 and len(values) != 1:
+            if spec["family"] != "specific" and len(values) != 1:
                 unsupported.append({"raw": raw, "reason": "requirement must contain one value"})
                 continue
             try:
@@ -831,19 +977,27 @@ class SbcService:
             if operator is None:
                 unsupported.append({"raw": raw, "reason": "unknown scope"})
                 continue
-            constraint = {"source_key": key, "operator": operator, "raw": raw}
-            if key in (3, 17):
+            constraint = {
+                "source_key": key,
+                "source_name": spec["name"],
+                "operator": operator,
+                "raw": raw,
+            }
+            family = spec["family"]
+            if family in ("squad_quality", "quality_count"):
                 quality = QUALITY_VALUES.get(source_value)
                 if quality is None:
                     unsupported.append({"raw": raw, "reason": "unknown quality value"})
                     continue
-                if key == 3:
+                if family == "squad_quality":
                     constraint.update({"type": "squad_quality", "quality": quality, "value": 1})
                 else:
-                    constraint.update({"type": "quality_count", "quality": quality, "value": int(raw.get("count", -1))})
-            elif key == 19:
-                constraint.update({"type": "team_rating", "value": source_value})
-            elif key in (26, 28):
+                    count = raw.get("count")
+                    if isinstance(count, bool) or not isinstance(count, int) or count < 1:
+                        unsupported.append({"raw": raw, "reason": "quality requirement count must be positive"})
+                        continue
+                    constraint.update({"type": "quality_count", "quality": quality, "value": count})
+            elif family == "overall_count":
                 count = raw.get("count")
                 if isinstance(count, bool) or not isinstance(count, int) or count < 1:
                     unsupported.append(
@@ -853,51 +1007,20 @@ class SbcService:
                 constraint.update(
                     {
                         "type": "overall_count",
-                        "overall_operator": "min" if key == 26 else "max",
+                        "overall_operator": spec["overall_operator"],
                         "overall": source_value,
                         "value": count,
                     }
                 )
-            elif key == 35:
-                constraint.update({"type": "chemistry", "value": source_value})
-            elif key == 7:
-                constraint.update({"type": "nation_count", "value": source_value})
-            elif key == 8:
-                constraint.update({"type": "league_count", "value": source_value})
-            elif key == 9:
-                constraint.update({"type": "club_count", "value": source_value})
-            elif key == 10:
+            elif family == "specific":
                 count = raw.get("count")
                 if isinstance(count, bool) or not isinstance(count, int) or count < 1:
-                    unsupported.append({"raw": raw, "reason": "specific nation requirement count must be positive"})
+                    unsupported.append({"raw": raw, "reason": "specific requirement count must be positive"})
                     continue
                 constraint.update(
-                    {"type": "specific_nation_count", "nation_id": source_value, "value": count}
+                    {"type": spec["type"], spec["ids"]: source_values, "value": count}
                 )
-            elif key == 11:
-                count = raw.get("count")
-                if isinstance(count, bool) or not isinstance(count, int) or count < 1:
-                    unsupported.append({"raw": raw, "reason": "specific league requirement count must be positive"})
-                    continue
-                constraint.update(
-                    {"type": "specific_league_count", "league_id": source_value, "value": count}
-                )
-            elif key == 12:
-                count = raw.get("count")
-                if isinstance(count, bool) or not isinstance(count, int) or count < 1:
-                    unsupported.append({"raw": raw, "reason": "specific club requirement count must be positive"})
-                    continue
-                constraint.update(
-                    {"type": "specific_club_count", "club_ids": source_values, "value": count}
-                )
-            elif key == 4:
-                constraint.update({"type": "same_nation_min", "value": source_value})
-            elif key == 5:
-                constraint.update({"type": "same_nation_max", "value": source_value})
-            elif key == 6:
-                constraint.update({"type": "same_club_max", "value": source_value})
             else:
-                unsupported.append({"raw": raw, "reason": f"unknown requirement key {key}"})
-                continue
+                constraint.update({"type": spec["type"], "value": source_value})
             constraints.append(constraint)
         return constraints, unsupported

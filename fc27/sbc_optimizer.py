@@ -196,11 +196,17 @@ class SbcOptimizer:
                         for item_index, row in enumerate(items)
                         if int(row["overall"]) >= int(constraint["overall"])
                     ]
-                else:
+                elif constraint["overall_operator"] == "max":
                     matching_indexes = [
                         item_index
                         for item_index, row in enumerate(items)
                         if int(row["overall"]) <= int(constraint["overall"])
+                    ]
+                else:
+                    matching_indexes = [
+                        item_index
+                        for item_index, row in enumerate(items)
+                        if int(row["overall"]) == int(constraint["overall"])
                     ]
                 count = sum(selected[item_index] for item_index in matching_indexes)
                 self._add_comparison(
@@ -238,12 +244,14 @@ class SbcOptimizer:
                     "specific_league_count": "league_id",
                     "specific_club_count": "club_id",
                 }[kind]
-                values = (
-                    {constraint["nation_id"]}
-                    if kind == "specific_nation_count"
-                    else {constraint["league_id"]}
-                    if kind == "specific_league_count"
-                    else set(constraint["club_ids"])
+                values = set(
+                    constraint[
+                        {
+                            "specific_nation_count": "nation_ids",
+                            "specific_league_count": "league_ids",
+                            "specific_club_count": "club_ids",
+                        }[kind]
+                    ]
                 )
                 matching = sum(
                     selected[item_index]
@@ -254,16 +262,14 @@ class SbcOptimizer:
                     model, matching, constraint["operator"], int(constraint["value"])
                 )
             elif kind in (
-                "same_nation_min",
-                "same_nation_max",
-                "same_league_max",
-                "same_club_max",
+                "same_nation_count",
+                "same_league_count",
+                "same_club_count",
             ):
                 attribute = {
-                    "same_nation_min": "nation_id",
-                    "same_nation_max": "nation_id",
-                    "same_league_max": "league_id",
-                    "same_club_max": "club_id",
+                    "same_nation_count": "nation_id",
+                    "same_league_count": "league_id",
+                    "same_club_count": "club_id",
                 }[kind]
                 maximum = self._maximum_attribute_count(
                     model, selected, items, attribute, slot_count, index

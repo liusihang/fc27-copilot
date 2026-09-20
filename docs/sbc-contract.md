@@ -28,6 +28,7 @@ The current normalized requirement keys are:
 | 17 | minimum/maximum/exact player count for quality 1/2/3 |
 | 19 | team rating |
 | 26 | count of players at or above one OVR threshold |
+| 27 | count of players at exactly one OVR threshold |
 | 28 | count of players at or below one OVR threshold |
 | 7 | distinct nation count |
 | 8 | distinct league count |
@@ -35,12 +36,13 @@ The current normalized requirement keys are:
 | 10 | count of players from one specific nation |
 | 11 | count of players from one specific league |
 | 12 | count of players from one of a specific set of clubs |
-| 4 with minimum scope | minimum players sharing one nation/region |
-| 5 | maximum players from one nation |
-| 6 | maximum players from one club |
+| 4 | maximum group size by nation/region, compared through scope |
+| 5 | maximum group size by league, compared through scope |
+| 6 | maximum group size by club, compared through scope |
 | 35 | minimum/maximum/exact squad chemistry |
+| 36 | minimum/maximum/exact chemistry points required for every player |
 
-Unknown keys, malformed tuples, unknown values, missing or contradictory player counts, and partial squads without exact fillable field-slot evidence are persisted in `unsupported_constraints`. The solver refuses those challenges with `SBC_SCHEMA_UNSUPPORTED`.
+These numeric identities and scope values are decoded from the current FC27 Web App `SBCEligibilityKey` and `SBCEligibilityScope` enums. Known Web App keys that are not implemented are reported by enum name; unknown keys, malformed tuples, unknown values, missing or contradictory player counts, and partial squads without exact fillable field-slot evidence are persisted in `unsupported_constraints`. The solver refuses those challenges with `SBC_SCHEMA_UNSUPPORTED`.
 
 ## Candidate objective
 
@@ -58,7 +60,7 @@ Protected items, loan items, Tradepile items, stale/missing items, duplicates, a
 
 The Agent resolves named players through `FC27:club_query` and passes concrete `item_id` values. This keeps duplicate owned copies unambiguous. A required item remains subject to every normal safety and objective rule. Required/excluded overlap, required items outside an explicit candidate pool, protected or loan required items, missing current items, and mandatory value above the hard limit fail before model construction.
 
-The optimizer models the normalized quality, quality-count, team-rating, nation, league, club, specific-nation, specific-league, specific-club, same-attribute, chemistry, squad-size, mandatory-item, and tradeable-value constraints. When the catalog provides card positions and the challenge exposes named formation slots, it also assigns each selected card to a compatible slot and returns item IDs in EA slot order. Chemistry uses the FC squad thresholds for clubs (2/4/7), nations (2/5/8), and leagues (3/5/8), with no manager contribution in an SBC squad. It minimizes, in order, tradeable-card use when requested, tradeable opportunity cost, rating consumption, and deterministic item identity. Accepted item sets are excluded and the model is resolved to produce additional candidates under one bounded deadline.
+The optimizer models the normalized quality, quality-count, team-rating, nation, league, club, specific-nation, specific-league, specific-club, same-attribute, chemistry, squad-size, mandatory-item, and tradeable-value constraints. Exact fillable slot indices and position metadata come from the loaded EA challenge squad. Formation names are descriptive and do not define write order. Chemistry uses the FC squad thresholds for clubs (2/4/7), nations (2/5/8), and leagues (3/5/8), with no manager contribution in an SBC squad. It minimizes, in order, tradeable-card use when requested, tradeable opportunity cost, rating consumption, and deterministic item identity. Accepted item sets are excluded and the model is resolved to produce additional candidates under one bounded deadline.
 
 Each result reports `optimal`, `feasible`, `infeasible`, or `unknown`. Every feasible model result passes the separate local validator before persistence. Unsupported EA requirements remain blocking; supplying a mandatory item never converts an unknown requirement into verified evidence.
 

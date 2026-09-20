@@ -1670,6 +1670,8 @@ class RuntimeDB:
                                 "slot_indices": value.get("slot_indices"),
                                 "slot_indices_source": value.get("slot_indices_source"),
                                 "slot_layout_error": value.get("slot_layout_error"),
+                                "slot_positions": value.get("slot_positions"),
+                                "slot_positions_source": value.get("slot_positions_source"),
                                 "formation": value["formation"],
                                 "slots": value["slots"],
                                 "rewards": value["rewards"],
