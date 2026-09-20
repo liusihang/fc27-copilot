@@ -528,6 +528,8 @@ class SbcService:
             return sum(row.get("league_id") == constraint["league_id"] for row in items)
         if kind == "specific_club_count":
             return sum(row.get("club_id") in constraint["club_ids"] for row in items)
+        if kind == "same_nation_min":
+            return metrics["same_nation_max"]
         return metrics[kind]
 
     @staticmethod
@@ -889,7 +891,7 @@ class SbcService:
                     {"type": "specific_club_count", "club_ids": source_values, "value": count}
                 )
             elif key == 4:
-                constraint.update({"type": "same_league_max", "value": source_value})
+                constraint.update({"type": "same_nation_min", "value": source_value})
             elif key == 5:
                 constraint.update({"type": "same_nation_max", "value": source_value})
             elif key == 6:

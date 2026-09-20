@@ -280,6 +280,37 @@ class SbcServiceTest(unittest.TestCase):
         self.assertTrue(solution["validation"]["valid"])
         self.assertGreaterEqual(solution["validation"]["metrics"]["chemistry"], 14)
 
+    def test_same_nation_minimum_requirement_uses_live_key_four_mapping(self):
+        captured = self.service.capture_challenges(
+            challenge_payload([specific_requirement(4, [4], 4, scope=0)])
+        )
+        challenge = captured["challenges"][0]
+        self.assertEqual(challenge["constraints"][0]["type"], "same_nation_min")
+        for item_id in range(1, 14):
+            self.service.catalog.facts[1000 + item_id].update(
+                {
+                    "overall": 75,
+                    "quality": "gold",
+                    "nation_id": 4 if item_id <= 3 else item_id + 10,
+                }
+            )
+        with self.assertRaises(FC27Error) as context:
+            self.service.solve(
+                "4",
+                challenge["challenge_id"],
+                {"candidate_item_ids": list(range(1, 12))},
+                max_solutions=1,
+            )
+        self.assertEqual(context.exception.code, "SBC_NO_SOLUTION")
+        self.service.catalog.facts[1004]["nation_id"] = 4
+        result = self.service.solve(
+            "4",
+            challenge["challenge_id"],
+            {"candidate_item_ids": list(range(1, 12))},
+            max_solutions=1,
+        )
+        self.assertTrue(result["solutions"][0]["validation"]["valid"])
+
     def test_minimum_squad_quality_accepts_higher_quality_items(self):
         captured = self.service.capture_challenges(
             challenge_payload([specific_requirement(3, [2], -1)])

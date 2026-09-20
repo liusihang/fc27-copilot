@@ -253,8 +253,14 @@ class SbcOptimizer:
                 self._add_comparison(
                     model, matching, constraint["operator"], int(constraint["value"])
                 )
-            elif kind in ("same_nation_max", "same_league_max", "same_club_max"):
+            elif kind in (
+                "same_nation_min",
+                "same_nation_max",
+                "same_league_max",
+                "same_club_max",
+            ):
                 attribute = {
+                    "same_nation_min": "nation_id",
                     "same_nation_max": "nation_id",
                     "same_league_max": "league_id",
                     "same_club_max": "club_id",

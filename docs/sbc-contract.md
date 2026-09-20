@@ -35,7 +35,7 @@ The current normalized requirement keys are:
 | 10 | count of players from one specific nation |
 | 11 | count of players from one specific league |
 | 12 | count of players from one of a specific set of clubs |
-| 4 | maximum players from one league |
+| 4 with minimum scope | minimum players sharing one nation/region |
 | 5 | maximum players from one nation |
 | 6 | maximum players from one club |
 | 35 | minimum/maximum/exact squad chemistry |
