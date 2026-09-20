@@ -7,6 +7,7 @@ from urllib.request import Request, urlopen
 
 
 MCP_URL = os.environ.get("FC27D_MCP_URL", "http://127.0.0.1:3926/mcp")
+MCP_REQUEST_TIMEOUT_SECONDS = 240
 
 
 def forward(message):
@@ -17,7 +18,7 @@ def forward(message):
         data=json.dumps(message, ensure_ascii=False).encode("utf-8"),
     )
     try:
-        with urlopen(request, timeout=65) as response:
+        with urlopen(request, timeout=MCP_REQUEST_TIMEOUT_SECONDS) as response:
             return json.load(response)
     except (HTTPError, URLError, TimeoutError) as error:
         raise RuntimeError(f"fc27d is unavailable at {MCP_URL}: {error}") from error
