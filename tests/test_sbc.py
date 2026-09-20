@@ -1,5 +1,6 @@
 import json
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -333,7 +334,7 @@ class SbcServiceTest(unittest.TestCase):
     def test_optimizer_default_budget_is_longer_than_five_seconds(self):
         from fc27.sbc_optimizer import SbcOptimizer
 
-        self.assertGreaterEqual(SbcOptimizer().time_limit_seconds, 30)
+        self.assertEqual(SbcOptimizer().time_limit_seconds, 180.0)
 
     def test_rating_vector_precedes_total_overall(self):
         payload = brick_challenge_payload(3)
@@ -427,6 +428,35 @@ class SbcServiceTest(unittest.TestCase):
         self.assertEqual(list(result["budget_analysis"]), ["0"])
         self.assertEqual(self.price_client.calls, [])
         self.assertEqual(result["actions_performed"], [])
+
+    def test_owned_only_solver_uses_180_second_deadline(self):
+        challenge = self.service.capture_challenges(challenge_payload())["challenges"][0]
+        observed = {}
+
+        def capture_deadline(
+            challenge,
+            items,
+            objective,
+            max_solutions,
+            deadline,
+            **kwargs,
+        ):
+            observed["remaining"] = deadline - time.monotonic()
+            return self.service._empty_optimizer_result(
+                "UNKNOWN_NO_SOLUTION_FOUND"
+            ), []
+
+        self.service._solve_domain = capture_deadline
+        with self.assertRaisesRegex(FC27Error, "shared deadline"):
+            self.service.solve(
+                "4",
+                challenge["challenge_id"],
+                {},
+                max_solutions=1,
+                purchase_budget=0,
+            )
+        self.assertGreater(observed["remaining"], 179.0)
+        self.assertLessEqual(observed["remaining"], 180.0)
 
     def test_planner_expands_exact_purchase_levels_incrementally(self):
         payload = brick_challenge_payload(3)

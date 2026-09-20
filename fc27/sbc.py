@@ -7,7 +7,12 @@ from collections import Counter, defaultdict
 from .errors import FC27Error
 from .market import FutggPriceClient
 from .runtime import utc_now
-from .sbc_optimizer import QUALITY_RANKS, SbcOptimizer, chemistry_score
+from .sbc_optimizer import (
+    DEFAULT_SOLVE_TIME_LIMIT_SECONDS,
+    QUALITY_RANKS,
+    SbcOptimizer,
+    chemistry_score,
+)
 
 
 SCOPE_OPERATORS = {0: "min", 1: "max", 2: "exact"}
@@ -145,7 +150,10 @@ class SbcService:
         purchase_budget = self._normalize_purchase_budget(
             purchase_budget, player_count
         )
-        deadline = started_at + min(600.0, 120.0 + 45.0 * purchase_budget)
+        deadline = started_at + min(
+            600.0,
+            DEFAULT_SOLVE_TIME_LIMIT_SECONDS + 45.0 * purchase_budget,
+        )
         items, automatic_exclusions = self._candidate_items(
             objective, reserved_item_ids or []
         )

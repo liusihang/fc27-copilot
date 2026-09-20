@@ -59,6 +59,10 @@ Protected items, loan items, Tradepile items, stale/missing items, duplicate own
 
 The Agent resolves named players through `FC27:club_query` and passes concrete `item_id` values. This keeps duplicate owned copies unambiguous. A required item remains subject to every normal safety and objective rule. Required/excluded overlap, required items outside an explicit candidate pool, protected or loan required items, missing current items, and mandatory value above the hard limit fail before model construction.
 
+Owned-only optimization uses one 180-second shared deadline. A feasible incumbent returned at the deadline remains independently validated and reports `FEASIBLE_UNPROVEN`; only a completed proof reports `OPTIMAL_PROVEN`.
+
+When one SBC set contains multiple unfinished challenges, the Agent plans them sequentially. Every later `sbc_solve` call places all `item_id` values selected for earlier unsubmitted challenges in `objective.exclude_item_ids`. This produces disjoint saved squads. After any challenge is submitted, the Agent performs a complete club synchronization and re-solves every remaining challenge against the new inventory before saving it again.
+
 The optimizer models the normalized quality, quality-count, team-rating, nation, league, club, specific-nation, specific-league, specific-club, same-attribute, chemistry, squad-size, mandatory-item, and tradeable-value constraints. Exact fillable slot indices and position metadata come from the loaded EA challenge squad. Formation names are descriptive and do not define write order.
 
 For ordinary cards, only a player assigned to a preferred or alternate position earns chemistry and contributes to club, league, and nation thresholds. Club thresholds are 2/4/7, league thresholds are 3/5/8, and nation thresholds are 2/5/8. Individual chemistry is capped at three and team chemistry is the sum of field-slot chemistry. SBC squads have no manager contribution. Special, Icon, Hero, Hall of FUT, and Evolution chemistry modifiers stay outside this standard-card solver because those cards are excluded from automatic candidates.

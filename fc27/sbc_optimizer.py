@@ -5,6 +5,7 @@ from ortools.sat.python import cp_model
 
 
 QUALITY_RANKS = {"bronze": 1, "silver": 2, "gold": 3}
+DEFAULT_SOLVE_TIME_LIMIT_SECONDS = 180.0
 CHEMISTRY_THRESHOLDS = {
     "club_id": (2, 4, 7),
     "nation_id": (2, 5, 8),
@@ -59,7 +60,12 @@ STATUS_NAMES = {
 
 
 class SbcOptimizer:
-    def __init__(self, *, time_limit_seconds=120.0, search_workers=4):
+    def __init__(
+        self,
+        *,
+        time_limit_seconds=DEFAULT_SOLVE_TIME_LIMIT_SECONDS,
+        search_workers=4,
+    ):
         self.time_limit_seconds = float(time_limit_seconds)
         self.search_workers = max(1, int(search_workers))
 

@@ -263,6 +263,8 @@ class MCPTest(unittest.TestCase):
         self.assertFalse(objective["additionalProperties"])
         self.assertIn("club_query", tool["description"])
         self.assertIn("rating vector", tool["description"])
+        self.assertIn("exclude_item_ids", tool["description"])
+        self.assertIn("same set", tool["description"])
         self.assertIn("set_id", tool["inputSchema"]["required"])
         actions = next(
             value for value in TOOLS if value["name"] == "execute_actions"
