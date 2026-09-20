@@ -314,9 +314,11 @@ class FC27Daemon:
                         "getSbcChallenge",
                         {"challenge_id": challenge_id, "set_id": set_id},
                     )
+                    raw = self._enrich_sbc_slot_positions(raw)
                     data = service.capture_challenge(raw, include_raw=include_raw)
                 elif set_id is not None:
                     raw = self._browser_tool("getSbcChallenges", {"set_id": set_id})
+                    raw = self._enrich_sbc_slot_positions(raw)
                     data = service.capture_challenges(raw, include_raw=include_raw)
                 else:
                     raw = self._browser_tool("getSbcSets", {})
@@ -565,6 +567,33 @@ class FC27Daemon:
             and (slot.get("item") or {}).get("item_type") in (None, "player")
         }
         return sorted(item_ids)
+
+    def _enrich_sbc_slot_positions(self, payload):
+        squad_state = self._browser_tool(
+            "getSquads", {"detail": "detailed", "squad_id": None}
+        )
+        formations = {
+            str(value.get("name")): value.get("positions") or []
+            for value in (squad_state.get("catalog") or {}).get("formations") or []
+            if value.get("name")
+        }
+        challenges = []
+        if isinstance(payload.get("challenge"), dict):
+            challenges.append(payload["challenge"])
+        challenges.extend(
+            value
+            for value in payload.get("challenges") or []
+            if isinstance(value, dict)
+        )
+        for challenge in challenges:
+            if challenge.get("slot_positions"):
+                continue
+            positions = formations.get(str(challenge.get("formation")))
+            if not positions:
+                continue
+            challenge["slot_positions"] = [dict(value) for value in positions]
+            challenge["slot_positions_source"] = "ea_formation_repository"
+        return payload
 
     def _envelope(self, source, data, complete=True):
         metadata = self.catalog.metadata()

@@ -639,7 +639,7 @@
     const squadPlayers = collectionValues(
       typeof squad?.getPlayers === 'function' ? squad.getPlayers() : squad?.players
     );
-    const slotPositions = squadPlayers.slice(0, 11).map((entry, fallbackIndex) => {
+    const directSlotPositions = squadPlayers.slice(0, 11).map((entry, fallbackIndex) => {
       const normalized = plainSquadSlot(entry) || {};
       const rawPosition = readValue(entry, ['position', 'positionId'], ['getPosition']);
       const rawPositionName = rawPosition && typeof rawPosition === 'object'
@@ -653,7 +653,14 @@
         general_position: normalized.general_position ?? null,
         general_position_name: normalized.general_position_name ?? null,
       };
-    }).filter((entry) => Number.isInteger(entry.slot_index) && entry.slot_index >= 0 && entry.slot_index < 11);
+    }).filter((entry) => (
+      Number.isInteger(entry.slot_index)
+      && entry.slot_index >= 0
+      && entry.slot_index < 11
+      && (entry.position_name || entry.general_position_name)
+    ));
+    const slotPositions = directSlotPositions;
+    const slotPositionsSource = directSlotPositions.length ? 'ea_squad_slots' : null;
     const slotRequirements = [
       detailPayload?.playerRequirements,
       detailPayload?.playerrequirements,
@@ -684,7 +691,7 @@
           slot_indices_source: 'ea_player_requirements',
           slot_requirements: plainValue(slotRequirements, 0, new WeakSet(), 8),
           slot_positions: slotPositions,
-          slot_positions_source: slotPositions.length ? 'ea_squad_slots' : null,
+          slot_positions_source: slotPositionsSource,
         };
       }
     }
@@ -703,7 +710,7 @@
         slot_indices_source: 'ea_simple_brick_indices',
         slot_requirements: null,
         slot_positions: slotPositions,
-        slot_positions_source: slotPositions.length ? 'ea_squad_slots' : null,
+        slot_positions_source: slotPositionsSource,
       };
     }
     return {
@@ -711,7 +718,7 @@
       slot_indices_source: null,
       slot_requirements: null,
       slot_positions: slotPositions,
-      slot_positions_source: slotPositions.length ? 'ea_squad_slots' : null,
+      slot_positions_source: slotPositionsSource,
     };
   }
 
@@ -1259,6 +1266,11 @@
         display_name: readValue(position, ['displayName'], ['getDisplayName']),
         unique_id: readValue(position, ['uniqueId', 'uniquePosition']),
         general_position: readValue(position, ['generalPosition', 'typeId']),
+        general_position_name: readValue(
+          position,
+          ['generalPositionName'],
+          ['getGeneralPositionName']
+        ),
       })),
     };
   }

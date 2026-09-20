@@ -107,7 +107,27 @@ class IdentityBridge:
                         "tactics": [],
                     }
                 ],
-                "catalog": {"formations": [{"id": 8, "name": "f433"}]},
+                "catalog": {
+                    "formations": [
+                        {
+                            "id": 8,
+                            "name": "f433",
+                            "positions": [
+                                {"slot_index": 0, "id": 0, "name": "GK", "general_position": 0},
+                                {"slot_index": 1, "id": 7, "name": "LB", "general_position": 7},
+                                {"slot_index": 2, "id": 4, "name": "RCB", "general_position": 5},
+                                {"slot_index": 3, "id": 6, "name": "LCB", "general_position": 5},
+                                {"slot_index": 4, "id": 3, "name": "RB", "general_position": 3},
+                                {"slot_index": 5, "id": 13, "name": "RCM", "general_position": 14},
+                                {"slot_index": 6, "id": 14, "name": "CM", "general_position": 14},
+                                {"slot_index": 7, "id": 15, "name": "LCM", "general_position": 14},
+                                {"slot_index": 8, "id": 27, "name": "LW", "general_position": 27},
+                                {"slot_index": 9, "id": 25, "name": "ST", "general_position": 25},
+                                {"slot_index": 10, "id": 23, "name": "RW", "general_position": 23}
+                            ]
+                        }
+                    ]
+                },
             },
             "getSbcSets": {
                 "status": 200,
@@ -364,6 +384,29 @@ class MCPTest(unittest.TestCase):
         )
         self.assertTrue(response["ok"])
         self.assertEqual(captured["reserved_item_ids"], [100])
+
+    def test_sbc_refresh_enriches_slots_from_live_formation_repository(self):
+        self.daemon.bridge = IdentityBridge()
+        payload = {
+            "set": {"id": 16, "name": "Marquee Matchups", "raw": {"id": 16}},
+            "challenge": {
+                "id": 37,
+                "set_id": 16,
+                "name": "FC Porto v SL Benfica",
+                "formation": "f433",
+                "slot_indices": list(range(11)),
+                "requirements": [],
+                "raw": {"id": 37, "formation": "f433"},
+            },
+        }
+        enriched = self.daemon._enrich_sbc_slot_positions(payload)
+        self.assertEqual(
+            enriched["challenge"]["slot_positions_source"],
+            "ea_formation_repository",
+        )
+        self.assertEqual(
+            enriched["challenge"]["slot_positions"][0]["name"], "GK"
+        )
 
     def test_catalog_query_returns_uniform_envelope(self):
         response = self.daemon.mcp.handle({"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "catalog_query", "arguments": {"card_ea_ids": [200]}}})

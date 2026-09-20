@@ -927,7 +927,7 @@ class SbcService:
     @staticmethod
     def _resolve_slot_positions(value, raw, slot_indices):
         positions = value.get("slot_positions")
-        source = "challenge.slot_positions"
+        source = value.get("slot_positions_source") or "challenge.slot_positions"
         if positions is None:
             positions = raw.get("slotPositions")
             source = "raw.slotPositions"
@@ -951,13 +951,31 @@ class SbcService:
                 raw_position = position.get("position")
                 if not position_name and isinstance(raw_position, str):
                     position_name = raw_position
+                general_position_name = position.get("general_position_name")
+                if not general_position_name and position_name:
+                    general_position_name = {
+                        "RCB": "CB",
+                        "LCB": "CB",
+                        "RCM": "CM",
+                        "LCM": "CM",
+                        "RDM": "CDM",
+                        "LDM": "CDM",
+                        "RAM": "CAM",
+                        "LAM": "CAM",
+                        "RST": "ST",
+                        "LST": "ST",
+                        "RS": "ST",
+                        "LS": "ST",
+                    }.get(str(position_name).upper(), position_name)
                 normalized.append(
                     {
                         "slot_index": slot_index,
-                        "position_id": position.get("position_id"),
+                        "position_id": position.get("position_id", position.get("id")),
                         "position_name": str(position_name).upper() if position_name else None,
                         "general_position": position.get("general_position"),
-                        "general_position_name": position.get("general_position_name"),
+                        "general_position_name": str(general_position_name).upper()
+                        if general_position_name
+                        else None,
                     }
                 )
             if normalized:
