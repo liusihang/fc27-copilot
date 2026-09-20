@@ -207,17 +207,36 @@ class SbcService:
                 challenge, objective, player_count, club_rating_cap
             )
             combined_items = [*items, *market_items]
+            incumbent_items = club_candidates[0][1] if club_candidates else []
+            hybrid_shortlist = self._market_shortlist(
+                market_items,
+                challenge,
+                incumbent_items,
+                benchmark=False,
+            )
+            benchmark_shortlist = self._market_shortlist(
+                market_items,
+                challenge,
+                incumbent_items,
+                benchmark=True,
+            )
+            catalog_coverage["hybrid_shortlist_count"] = len(hybrid_shortlist)
+            catalog_coverage["benchmark_shortlist_count"] = len(
+                benchmark_shortlist
+            )
             for purchase_limit in (1, 2):
                 internal_objective = {
                     **objective,
                     "max_purchase_count": purchase_limit,
                 }
-                optimized, candidates = self._solve_domain(
+                optimized, candidates = self._solve_seeded_domain(
                     challenge,
                     combined_items,
+                    [*items, *hybrid_shortlist],
                     internal_objective,
                     min(maximum_solutions, 3),
                     deadline,
+                    proof_budget_seconds=20.0,
                 )
                 planner_results.append(optimized)
                 budget_analysis[str(purchase_limit)] = self._budget_summary(
@@ -254,12 +273,14 @@ class SbcService:
                 **objective,
                 "max_purchase_count": player_count,
             }
-            benchmark_optimized, benchmark_candidates = self._solve_domain(
+            benchmark_optimized, benchmark_candidates = self._solve_seeded_domain(
                 challenge,
                 benchmark_items,
+                [*required_owned, *benchmark_shortlist],
                 benchmark_objective,
                 1,
                 deadline,
+                proof_budget_seconds=15.0,
             )
             planner_results.append(benchmark_optimized)
             if benchmark_candidates:
@@ -355,6 +376,122 @@ class SbcService:
             }
             candidates.append((candidate, selected, validation))
         return optimized, candidates
+
+    def _solve_seeded_domain(
+        self,
+        challenge,
+        full_items,
+        seed_items,
+        objective,
+        max_solutions,
+        deadline,
+        *,
+        proof_budget_seconds,
+    ):
+        seed_deadline = min(deadline, time.monotonic() + 10.0)
+        seed_optimized, seed_candidates = self._solve_domain(
+            challenge,
+            seed_items,
+            objective,
+            max_solutions,
+            seed_deadline,
+        )
+        seed_optimized, seed_candidates = self._mark_restricted_domain(
+            seed_optimized, seed_candidates
+        )
+
+        if time.monotonic() >= deadline:
+            return seed_optimized, seed_candidates
+        proof_deadline = min(
+            deadline, time.monotonic() + max(1.0, float(proof_budget_seconds))
+        )
+        full_optimized, full_candidates = self._solve_domain(
+            challenge,
+            full_items,
+            objective,
+            max_solutions,
+            proof_deadline,
+        )
+        merged = self._merge_planning_candidates(
+            full_candidates, seed_candidates, max_solutions
+        )
+        if full_optimized["status"] == "OPTIMAL_PROVEN":
+            return full_optimized, merged
+        if merged:
+            proof = full_optimized.get("proof") or seed_optimized["proof"]
+            return {
+                "status": "FEASIBLE_UNPROVEN",
+                "complete": False,
+                "proof": {
+                    **proof,
+                    "rating_optimality": "UNPROVEN",
+                    "policy_optimality": "UNPROVEN",
+                },
+                "solutions": [value[0] for value in merged],
+            }, merged
+        return full_optimized, []
+
+    @staticmethod
+    def _mark_restricted_domain(optimized, candidates):
+        marked = []
+        for candidate, selected, validation in candidates:
+            candidate = {
+                **candidate,
+                "status": "FEASIBLE_UNPROVEN",
+                "proof": {
+                    **candidate["proof"],
+                    "rating_optimality": "UNPROVEN",
+                    "policy_optimality": "UNPROVEN",
+                    "restricted_domain": True,
+                },
+            }
+            validation = {
+                **validation,
+                "solver": {
+                    **validation["solver"],
+                    "status": "FEASIBLE_UNPROVEN",
+                    "proof": candidate["proof"],
+                },
+            }
+            marked.append((candidate, selected, validation))
+        if not marked:
+            return optimized, []
+        return {
+            "status": "FEASIBLE_UNPROVEN",
+            "complete": False,
+            "proof": {
+                **optimized["proof"],
+                "rating_optimality": "UNPROVEN",
+                "policy_optimality": "UNPROVEN",
+                "restricted_domain": True,
+            },
+            "solutions": [value[0] for value in marked],
+        }, marked
+
+    @classmethod
+    def _merge_planning_candidates(cls, primary, secondary, limit):
+        by_items = {}
+        for value in [*primary, *secondary]:
+            key = tuple(sorted(int(row["item_id"]) for row in value[1]))
+            current = by_items.get(key)
+            if current is None or cls._candidate_sort_key(value) < cls._candidate_sort_key(
+                current
+            ):
+                by_items[key] = value
+        return sorted(by_items.values(), key=cls._candidate_sort_key)[:limit]
+
+    @staticmethod
+    def _candidate_sort_key(value):
+        candidate, _, validation = value
+        components = candidate["objective_components"]
+        return (
+            validation["metrics"]["rating_vector"],
+            components["purchase_count"],
+            components["tradeable_item_count"],
+            components["tradeable_value"],
+            components["purchase_value"],
+            tuple(candidate["item_ids"]),
+        )
 
     @staticmethod
     def _empty_optimizer_result(status):
@@ -480,6 +617,89 @@ class SbcService:
             )
         )
         return reduced
+
+    @staticmethod
+    def _market_shortlist(items, challenge, incumbent_items, *, benchmark):
+        ordered = sorted(
+            items,
+            key=lambda row: (
+                int(row["overall"]),
+                int(row["purchase_price"]),
+                int(row["card_ea_id"]),
+            ),
+        )
+        selected = {}
+
+        def retain(rows, limit):
+            for row in list(rows)[:limit]:
+                selected[int(row["card_ea_id"])] = row
+
+        retain(ordered, 500 if benchmark else 300)
+
+        by_positions = {}
+        for row in ordered:
+            key = tuple(
+                sorted(str(value).upper() for value in row.get("positions") or [])
+            )
+            by_positions.setdefault(key, []).append(row)
+        for rows in by_positions.values():
+            retain(rows, 8 if benchmark else 4)
+
+        for constraint in challenge["constraints"]:
+            mapping = {
+                "specific_club_count": ("club_id", "club_ids"),
+                "specific_league_count": ("league_id", "league_ids"),
+                "specific_nation_count": ("nation_id", "nation_ids"),
+            }.get(constraint["type"])
+            if mapping is None:
+                continue
+            attribute, values_key = mapping
+            values = set(constraint[values_key])
+            retain(
+                (row for row in ordered if row.get(attribute) in values),
+                300,
+            )
+
+        relevant_values = {
+            attribute: {
+                row.get(attribute)
+                for row in incumbent_items
+                if row.get(attribute) is not None
+            }
+            for attribute in ("club_id", "league_id", "nation_id")
+        }
+        limits = {
+            "club_id": 20,
+            "league_id": 100,
+            "nation_id": 100,
+        }
+        for attribute, values in relevant_values.items():
+            for value in values:
+                retain(
+                    (row for row in ordered if row.get(attribute) == value),
+                    limits[attribute],
+                )
+
+        if benchmark:
+            for attribute, limit in (
+                ("club_id", 4),
+                ("league_id", 24),
+                ("nation_id", 12),
+            ):
+                groups = {}
+                for row in ordered:
+                    groups.setdefault(row.get(attribute), []).append(row)
+                for rows in groups.values():
+                    retain(rows, limit)
+
+        return sorted(
+            selected.values(),
+            key=lambda row: (
+                int(row["overall"]),
+                int(row["purchase_price"]),
+                int(row["card_ea_id"]),
+            ),
+        )
 
     @staticmethod
     def _budget_summary(optimized, candidates):
