@@ -1878,6 +1878,7 @@
           },
         });
       }
+      loaded.challenge.squad = squad;
       const response = await observeOnce(loaded.appServices.SBC.saveChallenge(loaded.challenge));
       return {
         set_id: Number(params.set_id),
