@@ -1,6 +1,7 @@
 import sqlite3
 import re
 import unicodedata
+from contextlib import contextmanager
 from pathlib import Path
 
 from .errors import FC27Error
@@ -44,6 +45,7 @@ class CatalogDB:
     def __init__(self, path):
         self.path = Path(path)
 
+    @contextmanager
     def connect(self):
         if not self.path.exists():
             raise FC27Error(
@@ -56,7 +58,11 @@ class CatalogDB:
         connection.create_function("normalize_text", 1, normalize_text, deterministic=True)
         connection.execute("PRAGMA foreign_keys = ON")
         connection.execute("PRAGMA busy_timeout = 5000")
-        return connection
+        try:
+            with connection:
+                yield connection
+        finally:
+            connection.close()
 
     def metadata(self):
         with self.connect() as connection:

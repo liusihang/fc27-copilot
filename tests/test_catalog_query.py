@@ -72,6 +72,13 @@ class CatalogQueryTest(unittest.TestCase):
         self.assertEqual(result["count"], 1)
         self.assertEqual(result["cards"][0]["common_name"], "Kylian Mbappé")
 
+    def test_catalog_connection_closes_after_context(self):
+        connection = None
+        with self.catalog.connect() as connection:
+            connection.execute("SELECT 1")
+        with self.assertRaises(sqlite3.ProgrammingError):
+            connection.execute("SELECT 1")
+
     def test_structured_relations_filter_and_render(self):
         result = self.catalog.query(
             {

@@ -35,6 +35,14 @@ class RuntimeManagerTest(unittest.TestCase):
         )
         self.assertEqual(summary["club_name"], "New")
 
+    def test_runtime_connection_closes_after_context(self):
+        self.manager.activate({"persona_id": "123", "platform": "pc"})
+        connection = None
+        with self.manager.active.connect() as connection:
+            connection.execute("SELECT 1")
+        with self.assertRaises(sqlite3.ProgrammingError):
+            connection.execute("SELECT 1")
+
     def test_restores_the_only_existing_persona(self):
         self.manager.activate(
             {"persona_id": "123", "platform": "pc", "club_id": 10, "club_name": "Club"}

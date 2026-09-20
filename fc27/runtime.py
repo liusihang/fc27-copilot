@@ -1,6 +1,7 @@
 import re
 import sqlite3
 import json
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -21,12 +22,17 @@ class RuntimeDB:
         self.path = Path(path)
         self.persona_id = str(persona_id)
 
+    @contextmanager
     def connect(self):
         connection = sqlite3.connect(self.path)
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys = ON")
         connection.execute("PRAGMA busy_timeout = 5000")
-        return connection
+        try:
+            with connection:
+                yield connection
+        finally:
+            connection.close()
 
     def initialize(self, identity):
         self.path.parent.mkdir(parents=True, exist_ok=True)
