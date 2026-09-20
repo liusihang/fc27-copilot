@@ -182,10 +182,12 @@ class SbcServiceTest(unittest.TestCase):
 
     def test_solver_persists_multiple_exact_validated_solutions(self):
         self.service.capture_challenges(challenge_payload())
+        for item_id in range(1, 16):
+            self.service.catalog.facts[1000 + item_id]["overall"] = 60
         result = self.service.solve(
             "4",
             "16",
-            {"prefer_untradeable": True, "max_tradeable_value": 0},
+            {"max_tradeable_value": 0},
             max_solutions=2,
         )
         self.assertEqual(result["solution_count"], 2)
@@ -240,7 +242,6 @@ class SbcServiceTest(unittest.TestCase):
             "16",
             {
                 "required_item_ids": [12, 13],
-                "prefer_untradeable": True,
                 "max_tradeable_value": 0,
             },
             max_solutions=2,
@@ -249,26 +250,113 @@ class SbcServiceTest(unittest.TestCase):
         for solution in result["solutions"]:
             self.assertTrue({12, 13}.issubset(solution["item_ids"]))
             self.assertEqual(solution["objective"]["required_item_ids"], [12, 13])
-            self.assertIn(solution["validation"]["solver"]["status"], {"optimal", "feasible"})
+            self.assertIn(
+                solution["validation"]["solver"]["status"],
+                {"OPTIMAL_PROVEN", "FEASIBLE_UNPROVEN"},
+            )
             persisted = self.runtime.get_sbc_solution(solution["solution_id"])
             self.assertEqual(persisted["objective"]["required_item_ids"], [12, 13])
 
-    def test_solver_minimizes_tradeable_value(self):
+    def test_optimizer_prioritizes_rating_before_tradeability(self):
         self.service.capture_challenges(challenge_payload())
         with self.runtime.connect() as connection:
             for item_id in range(1, 16):
                 connection.execute(
                     """UPDATE club_items
-                       SET tradeable = 1, acquisition_cost = ?
+                       SET tradeable = ?, acquisition_cost = ?
                        WHERE item_id = ?""",
-                    (item_id * 100, item_id),
+                    (0 if item_id == 15 else 1, item_id * 100, item_id),
                 )
             connection.commit()
+        self.service.catalog.facts[1015]["overall"] = 64
+        for item_id in range(1, 15):
+            self.service.catalog.facts[1000 + item_id]["overall"] = 60
+        result = self.service.solve("4", "16", {}, max_solutions=1)
+        solution = result["solutions"][0]
+        self.assertNotIn(15, solution["item_ids"])
+        self.assertEqual(solution["validation"]["metrics"]["max_overall"], 60)
+
+    def test_optimizer_prefers_untradeable_after_equal_rating(self):
+        self.service.capture_challenges(challenge_payload())
+        with self.runtime.connect() as connection:
+            connection.execute("UPDATE club_items SET tradeable = 1")
+            connection.execute(
+                "UPDATE club_items SET tradeable = 0 WHERE item_id = 15"
+            )
+            connection.commit()
+        for item_id in range(1, 16):
+            self.service.catalog.facts[1000 + item_id]["overall"] = 60
         result = self.service.solve(
-            "4", "16", {"prefer_untradeable": False}, max_solutions=1
+            "4",
+            "16",
+            {"candidate_item_ids": list(range(1, 13)) + [15]},
+            max_solutions=1,
         )
-        self.assertEqual(result["solutions"][0]["item_ids"], list(range(1, 12)))
-        self.assertEqual(result["solutions"][0]["tradeable_value"], 6600)
+        self.assertIn(15, result["solutions"][0]["item_ids"])
+
+    def test_optimizer_default_budget_is_longer_than_five_seconds(self):
+        from fc27.sbc_optimizer import SbcOptimizer
+
+        self.assertGreaterEqual(SbcOptimizer().time_limit_seconds, 30)
+
+    def test_rating_vector_precedes_total_overall(self):
+        payload = brick_challenge_payload(3)
+        payload["challenges"][0]["slots"] = ["GK", "LB", "CB"]
+        payload["challenges"][0]["requirements"] = [
+            specific_requirement(6, [2], -1, scope=0)
+        ]
+        challenge = self.service.capture_challenges(payload)["challenges"][0]
+        facts = {
+            1: (80, 3),
+            2: (79, 1),
+            3: (66, 1),
+            4: (78, 2),
+            5: (78, 2),
+        }
+        for item_id, (overall, club_id) in facts.items():
+            self.service.catalog.facts[1000 + item_id].update(
+                {"overall": overall, "club_id": club_id}
+            )
+        result = self.service.solve(
+            "1",
+            challenge["challenge_id"],
+            {
+                "candidate_item_ids": list(facts),
+                "required_item_ids": [1],
+            },
+            max_solutions=1,
+        )
+        solution = result["solutions"][0]
+        self.assertEqual(set(solution["item_ids"]), {1, 4, 5})
+        self.assertEqual(
+            solution["validation"]["metrics"]["rating_vector"],
+            [80, 78, 78],
+        )
+
+    def test_hall_model_rejects_false_out_of_position_assignment(self):
+        payload = brick_challenge_payload(3)
+        payload["challenges"][0]["slots"] = ["ST", "GK", "CB"]
+        payload["challenges"][0]["requirements"] = [
+            specific_requirement(35, [4], -1, scope=2)
+        ]
+        challenge = self.service.capture_challenges(payload)["challenges"][0]
+        for item_id in (1, 2, 3):
+            self.service.catalog.facts[1000 + item_id].update(
+                {
+                    "club_id": 10,
+                    "league_id": 20,
+                    "nation_id": 30,
+                    "positions": ["ST", "GK"] if item_id < 3 else ["CB"],
+                }
+            )
+        with self.assertRaises(FC27Error) as context:
+            self.service.solve(
+                "1",
+                challenge["challenge_id"],
+                {"candidate_item_ids": [1, 2, 3]},
+                max_solutions=1,
+            )
+        self.assertEqual(context.exception.code, "SBC_NO_SOLUTION")
 
     def test_optimizer_rating_model_matches_independent_validator(self):
         self.service.capture_challenges(

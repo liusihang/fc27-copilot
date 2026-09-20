@@ -90,10 +90,6 @@ SBC_OBJECTIVE_SCHEMA = object_schema(
         "exclude_item_ids": described(
             ITEM_ID_ARRAY_SCHEMA, "Exact owned items that no solution may contain."
         ),
-        "prefer_untradeable": described(
-            {"type": "boolean", "default": True},
-            "Prefer untradeable items before minimizing tradeable value.",
-        ),
         "max_tradeable_value": described(
             {"type": "integer", "minimum": 0},
             "Maximum selected tradeable opportunity value.",
@@ -103,7 +99,7 @@ SBC_OBJECTIVE_SCHEMA = object_schema(
             "Exclude cards above this overall.",
         ),
     },
-    description="Agent-selected deterministic SBC optimization objective.",
+    description="Agent-selected SBC hard limits. The planner always minimizes the complete descending rating vector before source and value preferences.",
 )
 
 
@@ -1016,7 +1012,7 @@ TOOLS = [
     ),
     tool(
         "sbc_solve",
-        "Read the current active squad, then optimize and persist exact owned-item candidates for one persisted set_id and challenge_id. Use after sbc_refresh and a complete club sync. Special cards, Evolution cards, active-squad items, protected items, loans, and explicit exclusions are unavailable. Resolve mandatory players through club_query and pass item_id values. Returns validated solutions, exclusion counts, and solver evidence; unsupported constraints block solving. It never saves or submits to EA.",
+        "Read the current active squad, then plan and persist exact owned-item candidates for one persisted set_id and challenge_id. Use after sbc_refresh and a complete club sync. Special cards, Evolution cards, active-squad items, protected items, loans, and explicit exclusions are unavailable. Resolve mandatory players through club_query and pass item_id values. The planner strictly minimizes the complete descending rating vector, then owned-source and value costs, and reports whether each optimality claim is proven. Unsupported constraints block solving. It never saves or submits to EA.",
         object_schema(
             {
                 "set_id": described(

@@ -51,7 +51,6 @@ The objective may contain:
 - `candidate_item_ids`: restrict solving to these current owned item IDs;
 - `required_item_ids`: require these exact current owned item IDs in every candidate;
 - `exclude_item_ids`: remove explicit items;
-- `prefer_untradeable`: sort untradeable items first;
 - `max_tradeable_value`: reject a squad above the limit;
 - `max_item_overall`: preserve higher-rated items;
 - `max_solutions`: return at most ten candidates through the tool parameter.
@@ -64,9 +63,9 @@ The optimizer models the normalized quality, quality-count, team-rating, nation,
 
 For ordinary cards, only a player assigned to a preferred or alternate position earns chemistry and contributes to club, league, and nation thresholds. Club thresholds are 2/4/7, league thresholds are 3/5/8, and nation thresholds are 2/5/8. Individual chemistry is capped at three and team chemistry is the sum of field-slot chemistry. SBC squads have no manager contribution. Special, Icon, Hero, Hall of FUT, and Evolution chemistry modifiers stay outside this standard-card solver because those cards are excluded from automatic candidates.
 
-When no chemistry or explicit position requirement exists, the optimizer does not restrict item-to-slot assignment and selects the lowest-cost eligible set under the remaining requirements. When chemistry is required, it assigns exact items to exact slots, permits zero-chemistry out-of-position fillers, and enforces only the assignment needed to reach the declared chemistry requirement. It minimizes, in order, tradeable-card use when requested, tradeable opportunity cost, rating consumption, and deterministic item identity. Accepted item sets are excluded and the model is resolved to produce additional candidates under one bounded deadline.
+When no chemistry or explicit position requirement exists, the optimizer does not restrict item-to-slot assignment. When chemistry is required, it uses complete Hall capacity constraints to prove that every selected player can be assigned to one real slot with exactly the solved in-position or out-of-position state. It then recovers one deterministic concrete matching and independently recomputes chemistry. The optimizer strictly minimizes the complete descending rating vector, then purchase count, owned tradeable count, owned opportunity cost, purchase cost, and deterministic item identity.
 
-Each result reports `optimal`, `feasible`, `infeasible`, or `unknown`. Every feasible model result passes the separate local validator before persistence. Unsupported EA requirements remain blocking; supplying a mandatory item never converts an unknown requirement into verified evidence.
+Each result reports `OPTIMAL_PROVEN`, `FEASIBLE_UNPROVEN`, `INFEASIBLE_PROVEN`, or `UNKNOWN_NO_SOLUTION_FOUND`. Rating and policy proofs are reported separately. Every feasible model result passes the separate local validator before persistence. Unsupported EA requirements remain blocking; supplying a mandatory item never converts an unknown requirement into verified evidence.
 
 ## Save action
 

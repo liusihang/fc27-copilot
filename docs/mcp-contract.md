@@ -144,7 +144,7 @@ Reads current SBC state from the authenticated Web App, normalizes and persists 
 
 ### `FC27:sbc_solve`
 
-Reads the current active squad, then optimizes and persists multiple exact-item candidates from the latest owned-item mirror with OR-Tools CP-SAT. Protected, loan, stale, duplicate, Tradepile, special, Evolution, active-squad, and explicitly excluded items are rejected. Active-squad protection covers starters, substitutes, and reserves and is rechecked before save or submission. Every candidate is independently revalidated before persistence. Results distinguish `optimal`, deadline-bounded `feasible`, `infeasible`, and `unknown` solver outcomes and never save or submit.
+Reads the current active squad, then plans and persists exact-item candidates from the latest owned-item mirror with OR-Tools CP-SAT. Protected, loan, stale, duplicate, Tradepile, special, Evolution, active-squad, and explicitly excluded items are rejected. Active-squad protection covers starters, substitutes, and reserves and is rechecked before save or submission. Every candidate is independently revalidated before persistence. The planner strictly minimizes the complete descending rating vector, then purchase count, owned tradeable count, owned opportunity cost, purchase cost, and deterministic identity. Results distinguish `OPTIMAL_PROVEN`, `FEASIBLE_UNPROVEN`, `INFEASIBLE_PROVEN`, and `UNKNOWN_NO_SOLUTION_FOUND` and never save or submit.
 
 The Agent can require concrete owned items:
 
@@ -155,7 +155,6 @@ The Agent can require concrete owned items:
   "objective": {
     "required_item_ids": [800013],
     "exclude_item_ids": [],
-    "prefer_untradeable": true,
     "max_tradeable_value": 0,
     "max_item_overall": 82
   },
@@ -170,7 +169,6 @@ Supported objective fields are:
 - `candidate_item_ids`: restrict the complete candidate pool;
 - `required_item_ids`: pin exact current owned items up to the challenge's captured player count;
 - `exclude_item_ids`: reject exact owned items;
-- `prefer_untradeable`: prioritize fewer tradeable items before their value;
 - `max_tradeable_value`: hard upper bound for selected tradeable opportunity cost;
 - `max_item_overall`: preserve cards above a caller-selected overall.
 

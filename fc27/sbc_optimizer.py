@@ -1,5 +1,5 @@
 import time
-from collections import defaultdict
+from collections import Counter, defaultdict
 
 from ortools.sat.python import cp_model
 
@@ -59,8 +59,9 @@ STATUS_NAMES = {
 
 
 class SbcOptimizer:
-    def __init__(self, *, time_limit_seconds=5.0):
+    def __init__(self, *, time_limit_seconds=120.0, search_workers=4):
         self.time_limit_seconds = float(time_limit_seconds)
+        self.search_workers = max(1, int(search_workers))
 
     def solve(self, challenge, items, objective, max_solutions):
         slot_count = int(challenge.get("player_count") or len(challenge["slots"]))
@@ -72,14 +73,14 @@ class SbcOptimizer:
         ).values():
             if len(item_indexes) > 1:
                 model.add(sum(selected[index] for index in item_indexes) <= 1)
-        slot_assignments = None
         chemistry_model = None
+        in_position = None
         chemistry_required = any(
             constraint["type"] in ("chemistry", "all_players_chemistry_points")
             for constraint in challenge["constraints"]
         )
         if chemistry_required:
-            slot_assignments, in_position = self._add_slot_assignments(
+            in_position = self._add_hall_slot_constraints(
                 model, selected, items, challenge, slot_count
             )
             chemistry_model = self._build_chemistry_model(
@@ -98,6 +99,13 @@ class SbcOptimizer:
         )
         if objective.get("max_tradeable_value") is not None:
             model.add(tradeable_value <= int(objective["max_tradeable_value"]))
+        purchase_count = sum(
+            selected[index]
+            for index, row in enumerate(items)
+            if row.get("source") == "market"
+        )
+        if objective.get("max_purchase_count") is not None:
+            model.add(purchase_count <= int(objective["max_purchase_count"]))
 
         self._add_challenge_constraints(
             model,
@@ -107,99 +115,423 @@ class SbcOptimizer:
             slot_count,
             chemistry_model,
         )
-        model.minimize(
-            self._objective_expression(
-                selected,
-                items,
-                slot_count,
-                prefer_untradeable=objective.get("prefer_untradeable", True) is not False,
-            )
-        )
-
         deadline = time.monotonic() + self.time_limit_seconds
-        solutions = []
+        histograms = self._rating_histograms(model, selected, items, slot_count)
+        proof_stages = []
+        incumbent = None
         terminal_status = "unknown"
-        while len(solutions) < max_solutions:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                terminal_status = "unknown"
-                break
-            solver = cp_model.CpSolver()
-            solver.parameters.max_time_in_seconds = remaining
-            solver.parameters.num_search_workers = 1
-            solver.parameters.random_seed = 0
-            status = solver.solve(model)
+        rating_optimality = "UNPROVEN"
+
+        ratings = sorted(histograms, reverse=True)
+        for start in range(0, len(ratings), 10):
+            tiers = ratings[start : start + 10]
+            base = slot_count + 1
+            objective_upper = base ** len(tiers) - 1
+            stage_objective = model.new_int_var(
+                0, objective_upper, f"rating_stage_{start // 10}"
+            )
+            model.add(
+                stage_objective
+                == sum(
+                    base ** (len(tiers) - tier_index - 1) * histograms[rating]
+                    for tier_index, rating in enumerate(tiers)
+                )
+            )
+            model.minimize(stage_objective)
+            status, solver = self._solve_model(model, deadline)
             terminal_status = STATUS_NAMES.get(status, "unknown")
             if status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
                 break
+            incumbent = self._candidate(
+                solver,
+                selected,
+                in_position,
+                items,
+                challenge["slots"][:slot_count],
+                rating_optimality="UNPROVEN",
+                policy_optimality="UNPROVEN",
+                proof_stages=proof_stages,
+            )
+            upper = int(solver.value(stage_objective))
+            lower = self._integer_objective_lower_bound(solver)
+            proven = status == cp_model.OPTIMAL and lower == upper
+            proof_stages.append(
+                {
+                    "ratings": tiers,
+                    "lower_bound": lower,
+                    "upper_bound": upper,
+                    "proven": proven,
+                }
+            )
+            if not proven:
+                break
+            for rating in tiers:
+                model.add(histograms[rating] == solver.value(histograms[rating]))
+        else:
+            rating_optimality = "PROVEN"
+
+        if incumbent is None:
+            return {
+                "status": (
+                    "INFEASIBLE_PROVEN"
+                    if terminal_status == "infeasible"
+                    else "UNKNOWN_NO_SOLUTION_FOUND"
+                ),
+                "complete": terminal_status == "infeasible",
+                "proof": {
+                    "rating_optimality": "UNPROVEN",
+                    "policy_optimality": "UNPROVEN",
+                    "stages": proof_stages,
+                },
+                "solutions": [],
+            }
+
+        if rating_optimality != "PROVEN":
+            incumbent["proof"]["stages"] = proof_stages
+            return {
+                "status": "FEASIBLE_UNPROVEN",
+                "complete": False,
+                "proof": incumbent["proof"],
+                "solutions": [incumbent],
+            }
+
+        policy_optimality = "PROVEN"
+        policy_stages = self._policy_objectives(
+            model, selected, items, slot_count
+        )
+        for name, expression in policy_stages[:-1]:
+            model.minimize(expression)
+            status, solver = self._solve_model(model, deadline)
+            terminal_status = STATUS_NAMES.get(status, "unknown")
+            if status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
+                policy_optimality = "UNPROVEN"
+                break
+            incumbent = self._candidate(
+                solver,
+                selected,
+                in_position,
+                items,
+                challenge["slots"][:slot_count],
+                rating_optimality="PROVEN",
+                policy_optimality="UNPROVEN",
+                proof_stages=proof_stages,
+            )
+            value = int(solver.value(expression))
+            lower = self._integer_objective_lower_bound(solver)
+            if status != cp_model.OPTIMAL or lower != value:
+                policy_optimality = "UNPROVEN"
+                break
+            model.add(expression == value)
+
+        if policy_optimality != "PROVEN":
+            incumbent["proof"]["stages"] = proof_stages
+            return {
+                "status": "FEASIBLE_UNPROVEN",
+                "complete": False,
+                "proof": incumbent["proof"],
+                "solutions": [incumbent],
+            }
+
+        identity_expression = policy_stages[-1][1]
+        solutions = []
+        enumeration_complete = False
+        while len(solutions) < max_solutions:
+            model.minimize(identity_expression)
+            status, solver = self._solve_model(model, deadline)
+            terminal_status = STATUS_NAMES.get(status, "unknown")
+            if status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
+                enumeration_complete = status == cp_model.INFEASIBLE
+                break
+            candidate = self._candidate(
+                solver,
+                selected,
+                in_position,
+                items,
+                challenge["slots"][:slot_count],
+                rating_optimality="PROVEN",
+                policy_optimality=(
+                    "PROVEN" if status == cp_model.OPTIMAL else "UNPROVEN"
+                ),
+                proof_stages=proof_stages,
+            )
+            solutions.append(candidate)
             chosen_indexes = [
                 index for index, variable in enumerate(selected) if solver.value(variable)
             ]
-            chosen_items = [items[index] for index in chosen_indexes]
-            chosen_items.sort(key=lambda row: int(row["item_id"]))
-            slot_item_ids = (
-                self._slot_item_ids(solver, slot_assignments, items, slot_count)
-                if slot_assignments is not None
-                else [int(row["item_id"]) for row in chosen_items]
-            )
-            solutions.append(
-                {
-                    "status": terminal_status,
-                    "item_ids": [int(row["item_id"]) for row in chosen_items],
-                    "slot_item_ids": slot_item_ids,
-                    "objective_value": int(round(solver.objective_value)),
-                    "objective_components": self._objective_components(chosen_items),
-                    "wall_time_seconds": solver.wall_time,
-                }
-            )
             model.add(sum(selected[index] for index in chosen_indexes) <= slot_count - 1)
+            if status != cp_model.OPTIMAL:
+                break
 
+        result_status = (
+            "OPTIMAL_PROVEN"
+            if solutions and all(
+                value["proof"]["policy_optimality"] == "PROVEN"
+                for value in solutions
+            )
+            else "FEASIBLE_UNPROVEN"
+        )
         return {
-            "status": solutions[0]["status"] if solutions else terminal_status,
-            "complete": terminal_status == "infeasible",
+            "status": result_status,
+            "complete": enumeration_complete,
+            "proof": {
+                "rating_optimality": "PROVEN",
+                "policy_optimality": (
+                    "PROVEN" if result_status == "OPTIMAL_PROVEN" else "UNPROVEN"
+                ),
+                "stages": proof_stages,
+            },
             "solutions": solutions,
         }
 
-    @staticmethod
-    def _add_slot_assignments(model, selected, items, challenge, slot_count):
-        slots = list(challenge.get("slots") or [])[:slot_count]
-        assignments = [
-            [
-                model.new_bool_var(f"assignment_{item_index}_{slot_index}")
-                for slot_index in range(slot_count)
-            ]
-            for item_index in range(len(items))
-        ]
-        in_position_vars = []
-        for item_index, row in enumerate(items):
-            model.add(sum(assignments[item_index]) == selected[item_index])
-            positions = {str(value).upper() for value in row.get("positions") or []}
-            compatible = [
-                assignments[item_index][slot_index]
-                for slot_index, slot in enumerate(slots)
-                if str(slot).upper() in positions
-            ]
-            in_position = model.new_bool_var(f"in_position_{item_index}")
-            model.add(in_position == sum(compatible))
-            in_position_vars.append(in_position)
-        for slot_index in range(slot_count):
-            model.add(
-                sum(assignments[item_index][slot_index] for item_index in range(len(items)))
-                == 1
-            )
-        return assignments, in_position_vars
+    def _solve_model(self, model, deadline):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return cp_model.UNKNOWN, None
+        solver = cp_model.CpSolver()
+        solver.parameters.max_time_in_seconds = remaining
+        solver.parameters.num_search_workers = self.search_workers
+        solver.parameters.random_seed = 0
+        solver.parameters.absolute_gap_limit = 0.0
+        solver.parameters.relative_gap_limit = 0.0
+        status = solver.solve(model)
+        return status, solver
 
     @staticmethod
-    def _slot_item_ids(solver, assignments, items, slot_count):
-        slot_item_ids = []
-        for slot_index in range(slot_count):
-            item_index = next(
-                item_index
-                for item_index in range(len(items))
-                if solver.value(assignments[item_index][slot_index])
+    def _integer_objective_lower_bound(solver):
+        response = solver.response_proto
+        if not hasattr(response, "inner_objective_lower_bound"):
+            raise RuntimeError(
+                "The pinned OR-Tools build does not expose an integer objective bound."
             )
-            slot_item_ids.append(int(items[item_index]["item_id"]))
-        return slot_item_ids
+        return int(response.inner_objective_lower_bound)
+
+    @staticmethod
+    def _rating_histograms(model, selected, items, slot_count):
+        histograms = {}
+        for rating in sorted({int(row["overall"]) for row in items}, reverse=True):
+            variable = model.new_int_var(0, slot_count, f"rating_count_{rating}")
+            model.add(
+                variable
+                == sum(
+                    selected[index]
+                    for index, row in enumerate(items)
+                    if int(row["overall"]) == rating
+                )
+            )
+            histograms[rating] = variable
+        return histograms
+
+    @staticmethod
+    def _bounded_sum(model, name, terms, upper):
+        variable = model.new_int_var(0, max(0, int(upper)), name)
+        model.add(variable == sum(terms))
+        return variable
+
+    def _policy_objectives(self, model, selected, items, slot_count):
+        purchase_terms = [
+            selected[index]
+            for index, row in enumerate(items)
+            if row.get("source") == "market"
+        ]
+        tradeable_terms = [
+            selected[index]
+            for index, row in enumerate(items)
+            if row.get("source") != "market" and row.get("tradeable")
+        ]
+        owned_costs = [
+            int(row.get("tradeable_value") or 0)
+            if row.get("source") != "market"
+            else 0
+            for row in items
+        ]
+        purchase_costs = [
+            int(row.get("purchase_price") or 0)
+            if row.get("source") == "market"
+            else 0
+            for row in items
+        ]
+        ranks = {
+            int(row["item_id"]): rank
+            for rank, row in enumerate(
+                sorted(items, key=lambda value: int(value["item_id"])), start=1
+            )
+        }
+        purchase_count = self._bounded_sum(
+            model, "policy_purchase_count", purchase_terms, slot_count
+        )
+        tradeable_count = self._bounded_sum(
+            model, "policy_tradeable_count", tradeable_terms, slot_count
+        )
+        owned_cost = self._bounded_sum(
+            model,
+            "policy_owned_cost",
+            [selected[index] * owned_costs[index] for index in range(len(items))],
+            sum(sorted(owned_costs, reverse=True)[:slot_count]),
+        )
+        purchase_cost = self._bounded_sum(
+            model,
+            "policy_purchase_cost",
+            [selected[index] * purchase_costs[index] for index in range(len(items))],
+            sum(sorted(purchase_costs, reverse=True)[:slot_count]),
+        )
+        identity = self._bounded_sum(
+            model,
+            "policy_identity",
+            [
+                selected[index] * ranks[int(row["item_id"])]
+                for index, row in enumerate(items)
+            ],
+            slot_count * len(items),
+        )
+        return [
+            ("purchase_count", purchase_count),
+            ("owned_tradeable_count", tradeable_count),
+            ("owned_opportunity_cost", owned_cost),
+            ("estimated_purchase_cost", purchase_cost),
+            ("deterministic_identity", identity),
+        ]
+
+    def _candidate(
+        self,
+        solver,
+        selected,
+        in_position,
+        items,
+        slots,
+        *,
+        rating_optimality,
+        policy_optimality,
+        proof_stages,
+    ):
+        chosen_indexes = [
+            index for index, variable in enumerate(selected) if solver.value(variable)
+        ]
+        chosen_items = [items[index] for index in chosen_indexes]
+        slot_item_ids = self._recover_slot_item_ids(
+            solver, selected, in_position, items, slots
+        )
+        return {
+            "status": (
+                "OPTIMAL_PROVEN"
+                if rating_optimality == "PROVEN" and policy_optimality == "PROVEN"
+                else "FEASIBLE_UNPROVEN"
+            ),
+            "item_ids": sorted(int(row["item_id"]) for row in chosen_items),
+            "slot_item_ids": slot_item_ids,
+            "objective_value": int(round(solver.objective_value)),
+            "objective_components": self._objective_components(chosen_items),
+            "proof": {
+                "rating_optimality": rating_optimality,
+                "policy_optimality": policy_optimality,
+                "pareto_status": "NONDOMINATED_WITHIN_RETURNED",
+                "frontier_complete": False,
+                "stages": list(proof_stages),
+            },
+            "wall_time_seconds": solver.wall_time,
+        }
+
+    @staticmethod
+    def _add_hall_slot_constraints(model, selected, items, challenge, slot_count):
+        slots = [str(value).upper() for value in challenge.get("slots") or []]
+        slots = slots[:slot_count]
+        position_types = sorted(set(slots))
+        position_index = {
+            position: index for index, position in enumerate(position_types)
+        }
+        capacities = Counter(slots)
+        full_mask = (1 << len(position_types)) - 1
+        demand_terms = defaultdict(list)
+        in_position = []
+
+        for item_index, row in enumerate(items):
+            positions = {str(value).upper() for value in row.get("positions") or []}
+            position_mask = 0
+            for position in positions:
+                if position in position_index:
+                    position_mask |= 1 << position_index[position]
+            variable = model.new_bool_var(f"in_position_{item_index}")
+            model.add(variable <= selected[item_index])
+            in_position.append(variable)
+            demand_terms[position_mask].append(variable)
+            demand_terms[full_mask ^ position_mask].append(
+                selected[item_index] - variable
+            )
+
+        demands = {}
+        for mask, terms in demand_terms.items():
+            demand = model.new_int_var(0, slot_count, f"slot_demand_{mask}")
+            model.add(demand == sum(terms))
+            demands[mask] = demand
+
+        for allowed_mask in range(1 << len(position_types)):
+            contained_demands = [
+                demand
+                for mask, demand in demands.items()
+                if mask & ~allowed_mask == 0
+            ]
+            capacity = sum(
+                capacities[position]
+                for position, index in position_index.items()
+                if allowed_mask & (1 << index)
+            )
+            model.add(sum(contained_demands) <= capacity)
+        return in_position
+
+    @staticmethod
+    def _recover_slot_item_ids(solver, selected, in_position, items, slots):
+        chosen_indexes = [
+            index for index, variable in enumerate(selected) if solver.value(variable)
+        ]
+        if in_position is None:
+            chosen_indexes.sort(key=lambda index: int(items[index]["item_id"]))
+            return [int(items[index]["item_id"]) for index in chosen_indexes]
+
+        allowed_by_item = {}
+        for item_index in chosen_indexes:
+            positions = {
+                str(value).upper() for value in items[item_index].get("positions") or []
+            }
+            must_be_in_position = bool(solver.value(in_position[item_index]))
+            allowed = [
+                slot_index
+                for slot_index, slot in enumerate(slots)
+                if (str(slot).upper() in positions) == must_be_in_position
+            ]
+            allowed_by_item[item_index] = allowed
+
+        ordered_items = sorted(
+            chosen_indexes,
+            key=lambda index: (
+                len(allowed_by_item[index]),
+                int(items[index]["item_id"]),
+            ),
+        )
+        assignment = {}
+        occupied = set()
+
+        def assign(offset):
+            if offset == len(ordered_items):
+                return True
+            item_index = ordered_items[offset]
+            for slot_index in allowed_by_item[item_index]:
+                if slot_index in occupied:
+                    continue
+                occupied.add(slot_index)
+                assignment[item_index] = slot_index
+                if assign(offset + 1):
+                    return True
+                assignment.pop(item_index, None)
+                occupied.remove(slot_index)
+            return False
+
+        if not assign(0):
+            raise RuntimeError(
+                "The Hall slot model returned a state without a concrete slot matching."
+            )
+        by_slot = [None] * len(slots)
+        for item_index, slot_index in assignment.items():
+            by_slot[slot_index] = int(items[item_index]["item_id"])
+        return by_slot
 
     def _add_challenge_constraints(
         self,
@@ -405,9 +737,11 @@ class SbcOptimizer:
     def _groups(items, attribute, *, include_none=True):
         groups = defaultdict(list)
         for index, row in enumerate(items):
-            if not include_none and row.get(attribute) is None:
+            value = row.get(attribute)
+            if not include_none and value is None:
                 continue
-            groups[row.get(attribute)].append(index)
+            key = value if value is not None else ("missing", index)
+            groups[key].append(index)
         return groups
 
     def _build_chemistry_model(self, model, items, in_position, slot_count):
@@ -476,41 +810,23 @@ class SbcOptimizer:
         return maximum
 
     @staticmethod
-    def _objective_expression(selected, items, slot_count, *, prefer_untradeable):
-        ranks = {
-            int(row["item_id"]): rank
-            for rank, row in enumerate(
-                sorted(items, key=lambda value: int(value["item_id"])), start=1
-            )
-        }
-        maximum_rank_sum = slot_count * len(items)
-        overall_weight = maximum_rank_sum + 1
-        lower_span = 99 * slot_count * overall_weight + maximum_rank_sum
-        value_weight = lower_span + 1
-        maximum_value = sum(
-            sorted(
-                (int(row.get("tradeable_value") or 0) for row in items),
-                reverse=True,
-            )[:slot_count]
-        )
-        tradeable_count_weight = maximum_value * value_weight + lower_span + 1
-        expression = 0
-        for index, row in enumerate(items):
-            coefficient = int(row.get("tradeable_value") or 0) * value_weight
-            coefficient += int(row["overall"]) * overall_weight
-            coefficient += ranks[int(row["item_id"])]
-            if prefer_untradeable and row.get("tradeable"):
-                coefficient += tradeable_count_weight
-            expression += selected[index] * coefficient
-        return expression
-
-    @staticmethod
     def _objective_components(items):
+        rating_vector = sorted(
+            (int(row["overall"]) for row in items), reverse=True
+        )
         return {
-            "tradeable_item_count": sum(1 for row in items if row.get("tradeable")),
+            "rating_vector": rating_vector,
+            "max_overall": max(rating_vector, default=0),
+            "purchase_count": sum(1 for row in items if row.get("source") == "market"),
+            "purchase_value": sum(int(row.get("purchase_price") or 0) for row in items),
+            "tradeable_item_count": sum(
+                1
+                for row in items
+                if row.get("source") != "market" and row.get("tradeable")
+            ),
             "tradeable_value": sum(
                 int(row.get("tradeable_value") or 0) for row in items
             ),
-            "total_overall": sum(int(row["overall"]) for row in items),
+            "total_overall": sum(rating_vector),
             "item_ids": [int(row["item_id"]) for row in items],
         }

@@ -44,7 +44,6 @@ OBJECTIVE_KEYS = {
     "candidate_item_ids",
     "required_item_ids",
     "exclude_item_ids",
-    "prefer_untradeable",
     "max_tradeable_value",
     "max_item_overall",
 }
@@ -186,6 +185,7 @@ class SbcService:
                 "status": candidate["status"],
                 "objective_value": candidate["objective_value"],
                 "objective_components": candidate["objective_components"],
+                "proof": candidate["proof"],
                 "wall_time_seconds": candidate["wall_time_seconds"],
             }
             validation["candidate_pool"] = {
@@ -196,7 +196,7 @@ class SbcService:
             self.runtime.save_sbc_solution(solution)
             solutions.append(solution)
         if not solutions:
-            if optimized["status"] == "unknown":
+            if optimized["status"] == "UNKNOWN_NO_SOLUTION_FOUND":
                 raise FC27Error(
                     "SBC_SOLVER_TIMEOUT",
                     "The SBC optimizer reached its deadline before finding a feasible squad.",
@@ -224,6 +224,7 @@ class SbcService:
                 "engine": "or-tools-cp-sat",
                 "status": optimized["status"],
                 "complete": optimized["complete"],
+                "proof": optimized["proof"],
             },
             "solution_count": len(solutions),
             "solutions": solutions,
@@ -344,15 +345,31 @@ class SbcService:
                 {"type": "required_item_ids", "missing_item_ids": missing_required}
             )
         metrics = self._metrics(items, challenge["slots"])
+        constraint_results = []
         for constraint in challenge["constraints"]:
             actual = self._constraint_actual(constraint, items, metrics)
-            if not self._compare(actual, constraint["operator"], constraint["value"]):
+            passed = self._compare(
+                actual, constraint["operator"], constraint["value"]
+            )
+            constraint_results.append(
+                {
+                    "source_key": constraint.get("source_key"),
+                    "source_name": constraint.get("source_name"),
+                    "type": constraint["type"],
+                    "operator": constraint["operator"],
+                    "required": constraint["value"],
+                    "actual": actual,
+                    "pass": passed,
+                }
+            )
+            if not passed:
                 failures.append({"type": "constraint", "constraint": constraint, "actual": actual})
         return {
             "valid": not failures,
             "item_ids": item_ids,
             "tradeable_value": tradeable_value,
             "metrics": metrics,
+            "constraint_results": constraint_results,
             "failures": failures,
         }
 
@@ -419,11 +436,6 @@ class SbcService:
                     recovery="Add the reported item IDs to candidate_item_ids or remove the candidate restriction.",
                     details={"item_ids": outside},
                 )
-        prefer_untradeable = value.get("prefer_untradeable", True)
-        if not isinstance(prefer_untradeable, bool):
-            raise FC27Error(
-                "SBC_OBJECTIVE_INVALID", "prefer_untradeable must be a boolean."
-            )
         max_tradeable_value = value.get("max_tradeable_value")
         if max_tradeable_value is not None and (
             isinstance(max_tradeable_value, bool)
@@ -448,7 +460,6 @@ class SbcService:
             "candidate_item_ids": candidate_item_ids if candidate_present else None,
             "required_item_ids": required_item_ids,
             "exclude_item_ids": exclude_item_ids,
-            "prefer_untradeable": prefer_untradeable,
             "max_tradeable_value": max_tradeable_value,
             "max_item_overall": max_item_overall,
         }
@@ -555,16 +566,23 @@ class SbcService:
             value = 0
             if row["tradeable"]:
                 value = row.get("acquisition_cost") or self.runtime.latest_reference_price(row["card_ea_id"]) or 0
-            items.append({**row, **fact, "tradeable_value": int(value)})
+            items.append(
+                {
+                    **row,
+                    **fact,
+                    "source": "owned",
+                    "tradeable_value": int(value),
+                    "purchase_price": 0,
+                }
+            )
         max_overall = objective.get("max_item_overall")
         if max_overall is not None:
             items = [row for row in items if row["overall"] <= int(max_overall)]
-        prefer_untradeable = objective.get("prefer_untradeable", True) is not False
         items.sort(
             key=lambda row: (
-                0 if (prefer_untradeable and not row["tradeable"]) else 1,
-                row["tradeable_value"],
                 row["overall"],
+                0 if not row["tradeable"] else 1,
+                row["tradeable_value"],
                 row["item_id"],
             )
         )
@@ -580,12 +598,17 @@ class SbcService:
 
     @staticmethod
     def _metrics(items, slots):
-        ratings = [int(row["overall"]) for row in items]
+        ratings = sorted(
+            (int(row["overall"]) for row in items), reverse=True
+        )
         average = sum(ratings) / len(ratings) if ratings else 0
         adjusted = sum(ratings) + sum(max(rating - average, 0) for rating in ratings)
         chemistry = chemistry_score(items, slots)
         return {
             "team_rating": math.floor(adjusted / len(ratings)) if ratings else 0,
+            "rating_vector": ratings,
+            "max_overall": max(ratings, default=0),
+            "total_overall": sum(ratings),
             "nation_count": len({row.get("nation_id") for row in items}),
             "league_count": len({row.get("league_id") for row in items}),
             "club_count": len({row.get("club_id") for row in items}),
