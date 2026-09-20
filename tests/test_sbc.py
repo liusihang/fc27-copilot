@@ -336,6 +336,18 @@ class SbcServiceTest(unittest.TestCase):
             )
         )
 
+    def test_current_marquee_formations_use_ea_slot_order(self):
+        expected = {
+            "f451": ["GK", "RB", "CB", "CB", "LB", "RM", "CM", "LM", "CAM", "CAM", "ST"],
+            "f532": ["GK", "RB", "CB", "CB", "CB", "LB", "CDM", "CM", "CM", "ST", "ST"],
+            "f5212": ["GK", "RB", "CB", "CB", "CB", "LB", "CM", "CM", "CAM", "ST", "ST"],
+        }
+        for formation, slots in expected.items():
+            payload = challenge_payload()
+            payload["challenges"][0]["formation"] = formation
+            captured = self.service.capture_challenges(payload)
+            self.assertEqual(captured["challenges"][0]["slots"], slots)
+
     def test_brick_challenge_uses_requirement_count_instead_of_formation_size(self):
         captured = self.service.capture_challenges(
             brick_challenge_payload(1, maximum=64)
