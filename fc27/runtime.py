@@ -801,7 +801,7 @@ class RuntimeDB:
         return result
 
     def reconcile_sbc_save_action(self, action_id, response):
-        saved_item_ids = self._require_trusted_sbc_readback(response)
+        saved_item_ids = self.require_trusted_sbc_save_readback(response)
 
         with self.connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
@@ -1167,7 +1167,7 @@ class RuntimeDB:
         return stored_result
 
     @staticmethod
-    def _require_trusted_sbc_readback(response):
+    def require_trusted_sbc_save_readback(response):
         saved_item_ids = [int(value) for value in response.get("saved_item_ids") or []]
         saved_slot_indices = [
             int(value) for value in response.get("saved_slot_indices") or []
@@ -1181,11 +1181,8 @@ class RuntimeDB:
             and freshness.get("sets_requested") is True
             and freshness.get("challenges_requested") is True
             and freshness.get("challenge_loaded") is True
-            and squad.get("eligible") is True
             and eligibility.get("source") == "ea_challenge_requirements"
-            and eligibility.get("identity_match") is True
             and eligibility.get("all_requirements_met") is True
-            and eligibility.get("submit_available") is True
             and bool(requirements)
             and all(value.get("met") is True for value in requirements)
             and len(saved_slot_indices) == len(saved_item_ids)
@@ -1193,6 +1190,23 @@ class RuntimeDB:
             and all(0 <= value < 11 for value in saved_slot_indices)
         )
         if not trusted_readback:
+            raise FC27Error(
+                "SBC_SAVE_READBACK_FAILED",
+                "SBC save verification requires a fresh trusted EA readback with positive challenge requirements.",
+                details={"source": response.get("source"), "eligibility": eligibility},
+            )
+        return saved_item_ids
+
+    @classmethod
+    def _require_trusted_sbc_readback(cls, response):
+        saved_item_ids = cls.require_trusted_sbc_save_readback(response)
+        squad = response.get("squad") or {}
+        eligibility = squad.get("eligibility_evidence") or {}
+        if (
+            squad.get("eligible") is not True
+            or eligibility.get("identity_match") is not True
+            or eligibility.get("submit_available") is not True
+        ):
             raise FC27Error(
                 "SBC_SAVE_READBACK_FAILED",
                 "SBC save verification requires a fresh trusted EA readback with complete positive eligibility evidence.",

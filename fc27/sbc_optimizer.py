@@ -67,6 +67,11 @@ class SbcOptimizer:
         model = cp_model.CpModel()
         selected = [model.new_bool_var(f"item_{row['item_id']}") for row in items]
         model.add(sum(selected) == slot_count)
+        for item_indexes in self._groups(
+            items, "base_player_ea_id", include_none=False
+        ).values():
+            if len(item_indexes) > 1:
+                model.add(sum(selected[index] for index in item_indexes) <= 1)
         slot_assignments = None
         chemistry_model = None
         chemistry_required = any(

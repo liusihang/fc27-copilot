@@ -155,6 +155,7 @@ class SbcServiceTest(unittest.TestCase):
                 )
                 facts[card_id] = {
                     "card_ea_id": card_id,
+                    "base_player_ea_id": card_id,
                     "overall": 60 + item_id % 4,
                     "quality": "bronze",
                     "club_id": item_id % 3,
@@ -195,6 +196,36 @@ class SbcServiceTest(unittest.TestCase):
             self.assertTrue(solution["validation"]["valid"])
             persisted = self.runtime.get_sbc_solution(solution["solution_id"])
             self.assertEqual(persisted["item_ids"], solution["item_ids"])
+
+    def test_solver_and_validator_reject_duplicate_base_player_instances(self):
+        self.service.capture_challenges(challenge_payload())
+        self.service.catalog.facts[1001]["base_player_ea_id"] = 500
+        self.service.catalog.facts[1002]["base_player_ea_id"] = 500
+        result = self.service.solve(
+            "4",
+            "16",
+            {"candidate_item_ids": list(range(1, 13))},
+            max_solutions=1,
+        )
+        solution = result["solutions"][0]
+        selected_base_players = [
+            self.service.catalog.facts[1000 + item_id]["base_player_ea_id"]
+            for item_id in solution["item_ids"]
+        ]
+        self.assertEqual(len(selected_base_players), len(set(selected_base_players)))
+
+        challenge = self.runtime.get_sbc_challenge("16")
+        rows = self.runtime.items_by_ids(list(range(1, 12)))
+        items = [
+            {**row, **self.service.catalog.facts[row["card_ea_id"]]}
+            for row in rows
+        ]
+        validation = self.service.validate(challenge, items)
+        self.assertFalse(validation["valid"])
+        self.assertIn(
+            {"type": "duplicate_base_player_ids", "base_player_ea_ids": [500]},
+            validation["failures"],
+        )
 
     def test_solver_requires_matching_set_and_challenge_identity(self):
         self.service.capture_challenges(challenge_payload())
@@ -744,6 +775,27 @@ class SbcServiceTest(unittest.TestCase):
         self.assertEqual(retained["slot_indices"], list(range(11)))
         self.assertEqual(retained["slots"], first_challenge["slots"])
         self.assertEqual(retained["slot_indices_source"], "persisted_ea_slot_contract")
+
+    def test_save_readback_retains_previous_position_contract(self):
+        first = challenge_payload()
+        first_challenge = first["challenges"][0]
+        self.service.capture_challenge(
+            {"set": first["set"], "challenge": first_challenge}
+        )
+
+        readback = challenge_payload()
+        value = readback["challenges"][0]
+        value["slot_positions"] = []
+        value["slot_positions_source"] = None
+        value["slots"] = None
+        retained = self.service.capture_challenge(
+            {"set": readback["set"], "challenge": value}
+        )["challenge"]
+        self.assertEqual(retained["slot_indices"], list(range(11)))
+        self.assertEqual(retained["slots"], first_challenge["slots"])
+        self.assertEqual(
+            retained["slot_positions_source"], "persisted_ea_slot_contract"
+        )
 
     def test_solver_excludes_special_evolution_and_active_squad_items(self):
         self.service.capture_challenges(challenge_payload())

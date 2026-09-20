@@ -369,7 +369,7 @@ class ActionDispatcher:
                     "slot_indices": slot_indices,
                 },
             )
-            saved_item_ids = [int(value) for value in response.get("saved_item_ids") or []]
+            saved_item_ids = self.runtime.require_trusted_sbc_save_readback(response)
             if saved_item_ids != action["item_ids"]:
                 raise FC27Error(
                     "SBC_SAVE_READBACK_FAILED",
@@ -388,23 +388,16 @@ class ActionDispatcher:
                         "expected_slot_indices": slot_indices,
                     },
                 )
-            eligibility = response.get("squad", {}).get("eligibility_evidence") or {}
-            freshness = response.get("freshness") or {}
+            set_value = response.get("set") or {}
+            challenge = response.get("challenge") or {}
             if (
-                response.get("source") != "ea_webapp_fresh"
-                or freshness.get("sets_requested") is not True
-                or freshness.get("challenges_requested") is not True
-                or freshness.get("challenge_loaded") is not True
-                or response.get("squad", {}).get("eligible") is not True
-                or eligibility.get("source") != "ea_challenge_requirements"
-                or eligibility.get("identity_match") is not True
-                or eligibility.get("all_requirements_met") is not True
-                or eligibility.get("submit_available") is not True
+                str(set_value.get("id")) != str(action["set_id"])
+                or str(challenge.get("id")) != str(action["challenge_id"])
             ):
                 raise FC27Error(
                     "SBC_SAVE_READBACK_FAILED",
-                    "Fresh EA SBC readback did not provide complete positive eligibility evidence.",
-                    details={"eligibility_evidence": eligibility, "freshness": freshness},
+                    "Fresh EA SBC readback returned a different set or challenge.",
+                    details={"set": set_value, "challenge": challenge},
                 )
         except FC27Error as error:
             raise FC27Error(

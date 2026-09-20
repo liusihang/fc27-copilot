@@ -56,7 +56,7 @@ The objective may contain:
 - `max_item_overall`: preserve higher-rated items;
 - `max_solutions`: return at most ten candidates through the tool parameter.
 
-Protected items, loan items, Tradepile items, stale/missing items, duplicates, special cards, Evolution cards, every player in the current active squad, and cards absent from the catalog are excluded or rejected. The active squad is read fresh before solving and before save or submission. Tradeable value uses acquisition cost, then the latest local reference price when acquisition cost is unavailable.
+Protected items, loan items, Tradepile items, stale/missing items, duplicate owned item IDs, duplicate `base_player_ea_id` values, special cards, Evolution cards, every player in the current active squad, and cards absent from the catalog are excluded or rejected. The active squad is read fresh before solving and before save or submission. Tradeable value uses acquisition cost, then the latest local reference price when acquisition cost is unavailable.
 
 The Agent resolves named players through `FC27:club_query` and passes concrete `item_id` values. This keeps duplicate owned copies unambiguous. A required item remains subject to every normal safety and objective rule. Required/excluded overlap, required items outside an explicit candidate pool, protected or loan required items, missing current items, and mandatory value above the hard limit fail before model construction.
 
@@ -72,7 +72,7 @@ Each result reports `optimal`, `feasible`, `infeasible`, or `unknown`. Every fea
 
 `save_sbc_squad` requires `set_id`, `challenge_id`, `solution_id`, and the persisted solution's ordered `item_ids`. The solution contains one EA field `slot_index` for every item. The page adapter reloads the challenge, confirms the same fillable slot layout, resolves the exact owned objects, rejects concept or missing items, and verifies placement before sending the save. After EA acknowledges the save, the dispatcher issues a separate read-only request that reloads the set list, challenge list, and saved challenge squad through EA services.
 
-The fresh readback contains only the set/challenge identity, current status, formation, rating, chemistry, occupied field-slot indices, and exact item order. Eligibility is evaluated through the reloaded challenge's own `isRequirementMet` results, bound to the active controller's matching set/challenge identity, plus a visible and enabled Submit control within that controller's root view.
+The fresh save readback contains the set/challenge identity, current status, formation, rating, chemistry, occupied field-slot indices, and exact item order. Save acceptance requires matching set/challenge identity, exact items and slots, and positive results from every reloaded challenge `isRequirementMet` check. Current-page identity and a visible enabled Submit control are separate submission evidence and remain required by guarded verification before any submit action.
 
 The daemon does not expose a generic browser-method RPC. Browser write methods are reachable only through audited action dispatch. A new save is rejected before EA contact when the solution is no longer `validated` or when the same solution already has a pending, running, completed, timed-out, or readback-pending save action. Submission additionally requires a matching completed save action inside a completed batch, with fresh trusted evidence for the same sync, set, challenge, and exact item order.
 

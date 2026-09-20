@@ -98,7 +98,8 @@ class CatalogDB:
         placeholders = ",".join("?" for _ in card_ea_ids)
         with self.connect() as connection:
             rows = connection.execute(
-                f"""SELECT c.card_ea_id, c.overall, LOWER(c.quality) AS quality,
+                f"""SELECT c.card_ea_id, c.base_player_ea_id,
+                           c.overall, LOWER(c.quality) AS quality,
                            c.club_id, c.league_id, p.nation_id, c.rarity_id,
                            c.is_icon, c.is_hero, c.is_special, c.is_evolution
                     FROM cards c JOIN players p USING(base_player_ea_id)

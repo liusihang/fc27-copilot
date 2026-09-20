@@ -305,6 +305,23 @@ class SbcService:
             )
         if len(item_ids) != len(set(item_ids)):
             failures.append({"type": "duplicate_item_ids"})
+        base_player_ids = [
+            int(row["base_player_ea_id"])
+            for row in items
+            if row.get("base_player_ea_id") is not None
+        ]
+        duplicate_base_player_ids = sorted(
+            base_player_id
+            for base_player_id in set(base_player_ids)
+            if base_player_ids.count(base_player_id) > 1
+        )
+        if duplicate_base_player_ids:
+            failures.append(
+                {
+                    "type": "duplicate_base_player_ids",
+                    "base_player_ea_ids": duplicate_base_player_ids,
+                }
+            )
         for row in items:
             if row.get("protected"):
                 failures.append({"type": "protected_item", "item_id": row["item_id"]})
@@ -1008,14 +1025,24 @@ class SbcService:
         return [], None
 
     def _retain_cached_slot_contract(self, challenge):
-        if challenge.get("slot_indices"):
-            return challenge
         existing = self.runtime.get_sbc_challenge(challenge["challenge_id"])
         if (
             existing is None
             or not existing.get("slot_indices")
             or str(existing.get("formation")) != str(challenge.get("formation"))
         ):
+            return challenge
+        if challenge.get("slot_indices"):
+            same_slots = [int(value) for value in challenge["slot_indices"]] == [
+                int(value) for value in existing["slot_indices"]
+            ]
+            generic_positions = not challenge.get("slots") or any(
+                str(value).startswith("ITEM_") for value in challenge.get("slots") or []
+            )
+            if same_slots and generic_positions and existing.get("slots"):
+                challenge["slot_positions"] = existing.get("slot_positions") or []
+                challenge["slot_positions_source"] = "persisted_ea_slot_contract"
+                challenge["slots"] = existing["slots"]
             return challenge
         challenge["player_count"] = existing.get("player_count")
         challenge["player_count_source"] = existing.get("player_count_source")

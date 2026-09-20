@@ -143,6 +143,14 @@ def browser_challenge(
     return value
 
 
+def save_only_readback(item_ids, *, player_count=11):
+    value = browser_challenge(item_ids, player_count=player_count)
+    value["squad"]["eligible"] = False
+    value["squad"]["eligibility_evidence"]["identity_match"] = False
+    value["squad"]["eligibility_evidence"]["submit_available"] = False
+    return value
+
+
 def submission_state(
     times_completed, *, status="NOT_STARTED", completed=False, player_count=11
 ):
@@ -193,6 +201,7 @@ class SbcActionTest(unittest.TestCase):
                 )
                 facts[card_id] = {
                     "card_ea_id": card_id,
+                    "base_player_ea_id": card_id,
                     "overall": 62,
                     "quality": "bronze",
                     "club_id": item_id,
@@ -1091,6 +1100,42 @@ class SbcActionTest(unittest.TestCase):
             self.runtime.get_sbc_solution(self.solution["solution_id"])["status"],
             "validated",
         )
+
+    def test_save_readback_does_not_require_submit_control(self):
+        item_ids = self.solution["item_ids"]
+        bridge = FakeBridge(
+            {
+                "saveSbcSquad": {"status": 200},
+                "readSavedSbcSquad": save_only_readback(item_ids),
+            }
+        )
+        saved = self.execute(
+            "save_sbc_squad", bridge, lambda kind: None, "save-without-submit-control"
+        )
+        self.assertEqual(saved["batch"]["status"], "complete")
+        self.assertEqual(
+            self.runtime.get_sbc_solution(self.solution["solution_id"])["status"],
+            "saved",
+        )
+
+    def test_reconcile_save_does_not_require_submit_control(self):
+        self.insert_failed_save("save-no-submit", "save-no-submit-batch")
+        result = self.runtime.reconcile_sbc_save_action(
+            "save-no-submit", save_only_readback(self.solution["item_ids"])
+        )
+        self.assertTrue(result["reconciled"])
+        self.assertEqual(
+            self.runtime.get_sbc_solution(self.solution["solution_id"])["status"],
+            "saved",
+        )
+
+    def test_submit_verification_still_requires_submit_control(self):
+        saved = self.save_solution("save-before-strict-verification")
+        action_id = saved["actions"][0]["action_id"]
+        with self.assertRaisesRegex(FC27Error, "complete positive eligibility"):
+            self.runtime.verify_sbc_saved_action(
+                action_id, save_only_readback(self.solution["item_ids"])
+            )
 
     def test_save_finalization_rejects_sync_that_advanced_during_readback(self):
         item_ids = self.solution["item_ids"]
