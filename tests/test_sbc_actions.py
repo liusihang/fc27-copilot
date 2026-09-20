@@ -935,12 +935,12 @@ class SbcActionTest(unittest.TestCase):
         )
         solution = self.runtime.get_sbc_solution(self.solution["solution_id"])
         self.assertEqual(solution["status"], "saved")
-        self.assertEqual(solution["validation"]["execution"]["saved_at_sync_id"], 2)
+        self.assertEqual(solution["validation"]["execution"]["saved_at_sync_id"], 1)
         self.runtime.require_new_sbc_submit_attempt(self.solution["solution_id"])
         audit = self.runtime.require_completed_sbc_save(
-            self.solution["solution_id"], 2, "4", "16", item_ids
+            self.solution["solution_id"], 1, "4", "16", item_ids
         )
-        self.assertEqual(audit["source"], "confirmed_not_applied_submit")
+        self.assertEqual(audit["action_id"], "save_sbc_squad-1")
 
     def test_reconcile_repeatable_submit_partial_consumption_stays_unknown(self):
         self.submit_timeout("BRIDGE_TIMEOUT", "reconcile-partial")

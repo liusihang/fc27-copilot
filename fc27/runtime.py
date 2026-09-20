@@ -189,6 +189,101 @@ class RuntimeDB:
                 row["item_id"]: dict(row)
                 for row in connection.execute("SELECT * FROM club_items")
             }
+            account = connection.execute(
+                "SELECT last_full_sync_id FROM account_state WHERE persona_id = ?",
+                (self.persona_id,),
+            ).fetchone()
+            current_sync_id = account["last_full_sync_id"] if account else None
+            added_ids = sorted(set(new_items) - set(old_items))
+            removed_ids = sorted(set(old_items) - set(new_items))
+            item_changes = {}
+            for item_id, item in new_items.items():
+                old = old_items.get(item_id)
+                acquisition_cost = (
+                    old["acquisition_cost"]
+                    if old and old["acquisition_cost"] is not None
+                    else item.get("acquisition_cost")
+                )
+                if old is None:
+                    item_changes[item_id] = {
+                        "change_type": "added",
+                        "details": None,
+                        "acquisition_cost": acquisition_cost,
+                    }
+                    continue
+                if old["location"] != item["location"]:
+                    item_changes[item_id] = {
+                        "change_type": "moved",
+                        "details": None,
+                        "acquisition_cost": acquisition_cost,
+                    }
+                    continue
+                changed = {
+                    key: [old[key], value]
+                    for key, value in (
+                        ("card_ea_id", item["card_ea_id"]),
+                        ("tradeable", 1 if item["tradeable"] else 0),
+                        ("loan_uses_remaining", item.get("loan_uses_remaining")),
+                        ("acquisition_cost", acquisition_cost),
+                    )
+                    if old[key] != value
+                }
+                if changed:
+                    item_changes[item_id] = {
+                        "change_type": "attributes_changed",
+                        "details": json.dumps(
+                            changed, separators=(",", ":"), sort_keys=True
+                        ),
+                        "acquisition_cost": acquisition_cost,
+                    }
+
+            state_changed = bool(item_changes or removed_ids) or current_sync_id is None
+
+            for result in results.values():
+                for listing in result.get("listings", []):
+                    if listing.get("trade_id") is None or listing.get("item_id") is None:
+                        continue
+                    connection.execute(
+                        """INSERT INTO trade_listings(
+                             trade_id, item_id, starting_bid, buy_now_price,
+                             current_bid, status, expires_at, last_seen_at
+                           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                           ON CONFLICT(trade_id) DO UPDATE SET
+                             current_bid = excluded.current_bid,
+                             status = excluded.status,
+                             expires_at = excluded.expires_at,
+                             last_seen_at = excluded.last_seen_at""",
+                        (
+                            listing["trade_id"],
+                            listing["item_id"],
+                            listing.get("starting_bid"),
+                            listing.get("buy_now_price"),
+                            listing.get("current_bid"),
+                            listing.get("status") or "active",
+                            str(listing.get("expires")) if listing.get("expires") is not None else None,
+                            observed_at,
+                        ),
+                    )
+
+            coins = (results.get("coins") or {}).get("coin_balance")
+            if not state_changed:
+                connection.execute(
+                    """UPDATE account_state SET coin_balance = ?, coin_observed_at = ?,
+                         last_full_sync_at = ? WHERE persona_id = ?""",
+                    (coins, observed_at, observed_at, self.persona_id),
+                )
+                connection.execute("DELETE FROM sync_runs WHERE sync_id = ?", (sync_id,))
+                connection.commit()
+                return {
+                    "sync_id": int(current_sync_id),
+                    "observed_at": observed_at,
+                    "item_count": len(new_items),
+                    "added": 0,
+                    "removed": 0,
+                    "changed": False,
+                    "complete": True,
+                }
+
             for item_id, item in new_items.items():
                 old = old_items.get(item_id)
                 acquisition_cost = (
@@ -225,25 +320,9 @@ class RuntimeDB:
                         sync_id,
                     ),
                 )
-                change_type = None
-                details = None
-                if old is None:
-                    change_type = "added"
-                elif old["location"] != item["location"]:
-                    change_type = "moved"
-                else:
-                    changed = {
-                        key: [old[key], value]
-                        for key, value in (
-                            ("card_ea_id", item["card_ea_id"]),
-                            ("tradeable", 1 if item["tradeable"] else 0),
-                            ("loan_uses_remaining", item.get("loan_uses_remaining")),
-                        )
-                        if old[key] != value
-                    }
-                    if changed:
-                        change_type = "attributes_changed"
-                        details = json.dumps(changed, separators=(",", ":"), sort_keys=True)
+                change = item_changes.get(item_id)
+                change_type = change["change_type"] if change else None
+                details = change["details"] if change else None
                 if change_type:
                     connection.execute(
                         """INSERT INTO inventory_changes(
@@ -259,7 +338,6 @@ class RuntimeDB:
                         ),
                     )
 
-            removed_ids = sorted(set(old_items) - set(new_items))
             for item_id in removed_ids:
                 old = old_items[item_id]
                 connection.execute(
@@ -270,32 +348,6 @@ class RuntimeDB:
                 )
                 connection.execute("DELETE FROM club_items WHERE item_id = ?", (item_id,))
 
-            for result in results.values():
-                for listing in result.get("listings", []):
-                    if listing.get("trade_id") is None or listing.get("item_id") is None:
-                        continue
-                    connection.execute(
-                        """INSERT INTO trade_listings(
-                             trade_id, item_id, starting_bid, buy_now_price,
-                             current_bid, status, expires_at, last_seen_at
-                           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                           ON CONFLICT(trade_id) DO UPDATE SET
-                             current_bid = excluded.current_bid,
-                             status = excluded.status,
-                             expires_at = excluded.expires_at,
-                             last_seen_at = excluded.last_seen_at""",
-                        (
-                            listing["trade_id"],
-                            listing["item_id"],
-                            listing.get("starting_bid"),
-                            listing.get("buy_now_price"),
-                            listing.get("current_bid"),
-                            listing.get("status") or "active",
-                            str(listing.get("expires")) if listing.get("expires") is not None else None,
-                            observed_at,
-                        ),
-                    )
-            coins = (results.get("coins") or {}).get("coin_balance")
             connection.execute(
                 """UPDATE account_state SET coin_balance = ?, coin_observed_at = ?,
                      last_full_sync_id = ?, last_full_sync_at = ?
@@ -309,9 +361,11 @@ class RuntimeDB:
             connection.commit()
         return {
             "sync_id": sync_id,
+            "observed_at": observed_at,
             "item_count": len(new_items),
-            "added": len(set(new_items) - set(old_items)),
+            "added": len(added_ids),
             "removed": len(removed_ids),
+            "changed": True,
             "complete": True,
         }
 
@@ -897,11 +951,11 @@ class RuntimeDB:
                     expected_item_ids,
                 )
             ]
-            if current_sync_id != sync_id or sync_id <= batch["expected_sync_id"]:
+            if current_sync_id != sync_id or sync_id < batch["expected_sync_id"]:
                 connection.rollback()
                 raise FC27Error(
                     "SBC_SUBMIT_STILL_UNKNOWN",
-                    "The reconciliation sync does not prove state after the original submit attempt.",
+                    "The reconciliation sync does not represent the current club state after the original submit attempt.",
                     details={
                         "expected_sync_id": batch["expected_sync_id"],
                         "evidence_sync_id": sync_id,

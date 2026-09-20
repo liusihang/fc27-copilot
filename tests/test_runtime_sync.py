@@ -95,6 +95,36 @@ class RuntimeSyncTest(unittest.TestCase):
         self.assertEqual(changes, [(1, "moved"), (2, "removed"), (3, "added")])
         self.assertNotEqual(first["sync_id"], second["sync_id"])
 
+    def test_identical_sync_reuses_current_club_state_version(self):
+        payload = results(
+            item(1, 101, "club", cost=500),
+            item(2, 102, "storage", tradeable=False),
+            coins=10000,
+        )
+        first = self.commit(payload)
+        second = self.commit(payload)
+
+        self.assertTrue(first["changed"])
+        self.assertFalse(second["changed"])
+        self.assertEqual(second["sync_id"], first["sync_id"])
+        self.assertEqual(self.runtime.account_summary()["last_full_sync_id"], first["sync_id"])
+        connection = sqlite3.connect(self.runtime.path)
+        complete_syncs = connection.execute(
+            "SELECT sync_id FROM sync_runs WHERE status = 'complete' ORDER BY sync_id"
+        ).fetchall()
+        connection.close()
+        self.assertEqual(complete_syncs, [(first["sync_id"],)])
+
+    def test_coin_only_change_does_not_advance_club_state_version(self):
+        first = self.commit(results(item(1, 101, "club"), coins=10000))
+        second = self.commit(results(item(1, 101, "club"), coins=9750))
+
+        self.assertFalse(second["changed"])
+        self.assertEqual(second["sync_id"], first["sync_id"])
+        state = self.runtime.account_summary()
+        self.assertEqual(state["last_full_sync_id"], first["sync_id"])
+        self.assertEqual(state["coin_balance"], 9750)
+
     def test_incomplete_sync_does_not_remove_previous_items(self):
         self.commit(results(item(1, 101, "club"), item(2, 102, "storage")))
         sync_id = self.runtime.begin_sync("login_full")
