@@ -254,8 +254,10 @@ class MCPTest(unittest.TestCase):
         self.assertIn("description", required["items"])
         self.assertEqual(required["maxItems"], 11)
         self.assertTrue(required["uniqueItems"])
+        self.assertNotIn("prefer_untradeable", objective["properties"])
         self.assertFalse(objective["additionalProperties"])
         self.assertIn("club_query", tool["description"])
+        self.assertIn("rating vector", tool["description"])
         self.assertIn("set_id", tool["inputSchema"]["required"])
         actions = next(
             value for value in TOOLS if value["name"] == "execute_actions"

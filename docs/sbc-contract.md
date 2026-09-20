@@ -67,6 +67,14 @@ When no chemistry or explicit position requirement exists, the optimizer does no
 
 Each result reports `OPTIMAL_PROVEN`, `FEASIBLE_UNPROVEN`, `INFEASIBLE_PROVEN`, or `UNKNOWN_NO_SOLUTION_FOUND`. Rating and policy proofs are reported separately. Every feasible model result passes the separate local validator before persistence. Unsupported EA requirements remain blocking; supplying a mandatory item never converts an unknown requirement into verified evidence.
 
+## Planning domains
+
+One solve request uses a shared 120-second deadline and analyzes four domains: current eligible owned items, owned plus at most one market card, owned plus at most two market cards, and a market benchmark with mandatory owned anchors when required. The ordinary-card catalog adapter applies only full-squad quality and explicit overall filters that are safe before solving. It excludes Icon, Hero, special, Evolution, SBC-exclusive, and objective-exclusive cards.
+
+The price adapter refreshes the current FUT.GG snapshot for every catalog candidate and persists observed prices. A market card is eligible only when the account platform has a positive `market_or_normal` price and is not extinct. Missing and non-market prices remain unavailable. Exact-feature groups retain the cheapest option for each base player and then at most the squad-size number of distinct bases; the full base-player uniqueness constraint remains in the model.
+
+Only all-owned plans receive a persisted `solution_id` and `executable=true`. Hybrid and market plans return exact `card_ea_id` purchase targets, FUT.GG estimates and observation times, `market_verification_required=true`, and `executable=false`. After a user chooses a hybrid plan, the Agent verifies each card through `market_search`; purchase, synchronization, item binding, save, and submission remain separate confirmed operations.
+
 ## Save action
 
 `save_sbc_squad` requires `set_id`, `challenge_id`, `solution_id`, and the persisted solution's ordered `item_ids`. The solution contains one EA field `slot_index` for every item. The page adapter reloads the challenge, confirms the same fillable slot layout, resolves the exact owned objects, rejects concept or missing items, and verifies placement before sending the save. After EA acknowledges the save, the dispatcher issues a separate read-only request that reloads the set list, challenge list, and saved challenge squad through EA services.

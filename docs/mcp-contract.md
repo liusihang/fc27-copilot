@@ -144,7 +144,7 @@ Reads current SBC state from the authenticated Web App, normalizes and persists 
 
 ### `FC27:sbc_solve`
 
-Reads the current active squad, then plans and persists exact-item candidates from the latest owned-item mirror with OR-Tools CP-SAT. Protected, loan, stale, duplicate, Tradepile, special, Evolution, active-squad, and explicitly excluded items are rejected. Active-squad protection covers starters, substitutes, and reserves and is rechecked before save or submission. Every candidate is independently revalidated before persistence. The planner strictly minimizes the complete descending rating vector, then purchase count, owned tradeable count, owned opportunity cost, purchase cost, and deterministic identity. Results distinguish `OPTIMAL_PROVEN`, `FEASIBLE_UNPROVEN`, `INFEASIBLE_PROVEN`, and `UNKNOWN_NO_SOLUTION_FOUND` and never save or submit.
+Reads the current active squad, then returns club-only, at-most-one-purchase, at-most-two-purchase, and market-benchmark plans with OR-Tools CP-SAT. Protected, loan, stale, duplicate, Tradepile, special, Evolution, active-squad, and explicitly excluded owned items are rejected. Market candidates come from the complete challenge-compatible ordinary-card catalog and a current FUT.GG platform price snapshot; cards with missing, extinct, non-market, SBC, or objective prices are unavailable. Active-squad protection covers starters, substitutes, and reserves and is rechecked before save or submission. Every candidate is independently revalidated. Only all-owned plans are persisted as executable SBC solutions. Hybrid plans keep owned `item_id` and purchase `card_ea_id` identities separate and require live EA market verification. The planner strictly minimizes the complete descending rating vector, then purchase count, owned tradeable count, owned opportunity cost, purchase cost, and deterministic identity. Results distinguish `OPTIMAL_PROVEN`, `FEASIBLE_UNPROVEN`, `INFEASIBLE_PROVEN`, and `UNKNOWN_NO_SOLUTION_FOUND` and never buy, save, or submit.
 
 The Agent can require concrete owned items:
 
@@ -171,6 +171,8 @@ Supported objective fields are:
 - `exclude_item_ids`: reject exact owned items;
 - `max_tradeable_value`: hard upper bound for selected tradeable opportunity cost;
 - `max_item_overall`: preserve cards above a caller-selected overall.
+
+The response contains persisted all-owned `solutions`, a maximum of ten deduplicated `plans`, per-budget `budget_analysis`, one optional `market_benchmark`, catalog/price coverage counts, and `actions_performed=[]`. Each plan reports its complete rating vector, chemistry, normalized constraint evidence, exact slots, owned items, missing market cards, estimated purchase cost, proof scope, execution readiness, and whether live EA market verification is required.
 
 ### `FC27:execute_actions`
 

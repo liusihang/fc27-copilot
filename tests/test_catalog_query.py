@@ -108,6 +108,34 @@ class CatalogQueryTest(unittest.TestCase):
         self.assertEqual(context.exception.code, "INVALID_SORT")
         self.assertIn("overall_desc", context.exception.recovery)
 
+    def test_sbc_catalog_candidates_apply_safe_full_squad_filters(self):
+        connection = sqlite3.connect(self.path)
+        connection.execute(
+            "INSERT INTO players(base_player_ea_id, common_name, nation_id) VALUES (101, 'Normal Player', 1)"
+        )
+        connection.execute(
+            """INSERT INTO cards(
+                 card_ea_id, futgg_id, base_player_ea_id, overall, quality,
+                 rarity_id, club_id, league_id
+               ) VALUES (201, 301, 101, 75, 'GOLD', 718, 20, 10)"""
+        )
+        connection.execute("INSERT INTO card_positions VALUES (201, 25, 1)")
+        connection.commit()
+        connection.close()
+
+        rows = self.catalog.sbc_catalog_candidates(
+            [
+                {
+                    "type": "squad_quality",
+                    "quality": "silver",
+                    "operator": "min",
+                }
+            ],
+            max_overall=80,
+        )
+        self.assertEqual([row["card_ea_id"] for row in rows], [201])
+        self.assertEqual(rows[0]["positions"], ["ST"])
+
 
 if __name__ == "__main__":
     unittest.main()

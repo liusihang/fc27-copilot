@@ -1,9 +1,11 @@
 import hashlib
 import json
 import math
+import time
 from collections import Counter
 
 from .errors import FC27Error
+from .market import FutggPriceClient
 from .runtime import utc_now
 from .sbc_optimizer import QUALITY_RANKS, SbcOptimizer, chemistry_score
 
@@ -54,9 +56,10 @@ def canonical_json(value):
 
 
 class SbcService:
-    def __init__(self, runtime, catalog):
+    def __init__(self, runtime, catalog, price_client=None):
         self.runtime = runtime
         self.catalog = catalog
+        self.price_client = price_client or FutggPriceClient()
 
     def capture_sets(self, payload, include_raw=True):
         observed_at = utc_now()
@@ -120,6 +123,7 @@ class SbcService:
         *,
         reserved_item_ids=None,
     ):
+        deadline = time.monotonic() + 120.0
         objective = self._normalize_objective(objective)
         challenge = self.runtime.get_sbc_challenge(challenge_id)
         if challenge is None or str(challenge.get("set_id")) != str(set_id):
@@ -153,19 +157,180 @@ class SbcService:
             challenge, items, objective, automatic_exclusions["by_item_id"]
         )
         player_count = self._player_count(challenge)
-        if len(items) < player_count:
-            raise FC27Error(
-                "SBC_NO_SOLUTION",
-                "Not enough eligible owned items remain after applying the objective and challenge filters.",
-                recovery="Sync the club, widen the objective, or acquire additional eligible items.",
-                details={"eligible_items": len(items), "required_slots": player_count},
-            )
         maximum_solutions = max(1, min(int(max_solutions), 10))
-        optimized = SbcOptimizer().solve(
-            challenge, items, objective, maximum_solutions
+        club_optimized, club_candidates = self._solve_domain(
+            challenge,
+            items,
+            objective,
+            maximum_solutions,
+            deadline,
         )
         solutions = []
+        plans = []
+        for candidate, selected, validation in club_candidates:
+            validation["candidate_pool"] = {
+                "eligible_count": len(items),
+                "excluded_counts": automatic_exclusions["counts"],
+            }
+            solution = self._solution(challenge, selected, objective, validation)
+            self.runtime.save_sbc_solution(solution)
+            solutions.append(solution)
+            plans.append(
+                self._plan(
+                    challenge,
+                    selected,
+                    validation,
+                    candidate,
+                    plan_type="club_only",
+                    purchase_budget_cap=0,
+                    solution_id=solution["solution_id"],
+                )
+            )
+
+        catalog_coverage = {
+            "catalog_count": 0,
+            "price_eligible_count": 0,
+            "price_unavailable_count": 0,
+            "modeled_market_count": 0,
+            "price_source": None,
+        }
+        budget_analysis = {
+            "0": self._budget_summary(club_optimized, club_candidates)
+        }
+        market_benchmark = None
+        planner_results = [club_optimized]
+        if objective.get("candidate_item_ids") is None:
+            club_rating_cap = None
+            if club_candidates:
+                club_rating_cap = club_candidates[0][2]["metrics"]["max_overall"]
+            market_items, catalog_coverage = self._market_candidates(
+                challenge, objective, player_count, club_rating_cap
+            )
+            combined_items = [*items, *market_items]
+            for purchase_limit in (1, 2):
+                internal_objective = {
+                    **objective,
+                    "max_purchase_count": purchase_limit,
+                }
+                optimized, candidates = self._solve_domain(
+                    challenge,
+                    combined_items,
+                    internal_objective,
+                    min(maximum_solutions, 3),
+                    deadline,
+                )
+                planner_results.append(optimized)
+                budget_analysis[str(purchase_limit)] = self._budget_summary(
+                    optimized, candidates
+                )
+                for candidate, selected, validation in candidates:
+                    purchase_count = sum(
+                        row.get("source") == "market" for row in selected
+                    )
+                    plans.append(
+                        self._plan(
+                            challenge,
+                            selected,
+                            validation,
+                            candidate,
+                            plan_type=(
+                                "club_only"
+                                if purchase_count == 0
+                                else {
+                                    1: "hybrid_one_purchase",
+                                    2: "hybrid_two_purchase",
+                                }.get(purchase_count, "hybrid_purchase")
+                            ),
+                            purchase_budget_cap=purchase_limit,
+                        )
+                    )
+
+            required_ids = set(objective.get("required_item_ids") or [])
+            required_owned = [
+                row for row in items if int(row["item_id"]) in required_ids
+            ]
+            benchmark_items = [*required_owned, *market_items]
+            benchmark_objective = {
+                **objective,
+                "max_purchase_count": player_count,
+            }
+            benchmark_optimized, benchmark_candidates = self._solve_domain(
+                challenge,
+                benchmark_items,
+                benchmark_objective,
+                1,
+                deadline,
+            )
+            planner_results.append(benchmark_optimized)
+            if benchmark_candidates:
+                candidate, selected, validation = benchmark_candidates[0]
+                market_benchmark = self._plan(
+                    challenge,
+                    selected,
+                    validation,
+                    candidate,
+                    plan_type="market_benchmark",
+                    purchase_budget_cap=player_count,
+                )
+                plans.append(market_benchmark)
+
+        plans = self._deduplicate_plans(plans)[:10]
+        if not plans:
+            statuses = {value["status"] for value in planner_results}
+            if "UNKNOWN_NO_SOLUTION_FOUND" in statuses:
+                raise FC27Error(
+                    "SBC_SOLVER_TIMEOUT",
+                    "The SBC planner reached its shared deadline before finding a feasible squad.",
+                    retryable=True,
+                    recovery="Retry after reducing explicit exclusions or after refreshing the club mirror.",
+                    details={"required_item_ids": objective["required_item_ids"]},
+                )
+            raise FC27Error(
+                "SBC_NO_SOLUTION",
+                "No owned or bounded-purchase combination satisfies the normalized challenge and Agent objective.",
+                recovery="Inspect required items and exclusions or acquire additional eligible cards.",
+                details={
+                    "solver_status": sorted(statuses),
+                    "required_item_ids": objective["required_item_ids"],
+                },
+            )
+        return {
+            "challenge": challenge,
+            "objective": objective,
+            "candidate_pool": {
+                "eligible_count": len(items),
+                "excluded_counts": automatic_exclusions["counts"],
+                **catalog_coverage,
+            },
+            "solver": {
+                "engine": "or-tools-cp-sat",
+                "status": club_optimized["status"],
+                "complete": club_optimized["complete"],
+                "proof": club_optimized["proof"],
+            },
+            "solution_count": len(solutions),
+            "solutions": solutions,
+            "plan_count": len(plans),
+            "plans": plans,
+            "budget_analysis": budget_analysis,
+            "market_benchmark": market_benchmark,
+            "actions_performed": [],
+        }
+
+    def _solve_domain(
+        self, challenge, items, objective, max_solutions, deadline
+    ):
+        player_count = self._player_count(challenge)
+        if len(items) < player_count:
+            return self._empty_optimizer_result("INFEASIBLE_PROVEN"), []
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return self._empty_optimizer_result("UNKNOWN_NO_SOLUTION_FOUND"), []
+        optimized = SbcOptimizer(time_limit_seconds=remaining).solve(
+            challenge, items, objective, max_solutions
+        )
         by_item_id = {int(row["item_id"]): row for row in items}
+        candidates = []
         for candidate in optimized["solutions"]:
             ordered_item_ids = candidate.get("slot_item_ids") or candidate["item_ids"]
             selected = [by_item_id[item_id] for item_id in ordered_item_ids]
@@ -188,47 +353,282 @@ class SbcService:
                 "proof": candidate["proof"],
                 "wall_time_seconds": candidate["wall_time_seconds"],
             }
-            validation["candidate_pool"] = {
-                "eligible_count": len(items),
-                "excluded_counts": automatic_exclusions["counts"],
-            }
-            solution = self._solution(challenge, selected, objective, validation)
-            self.runtime.save_sbc_solution(solution)
-            solutions.append(solution)
-        if not solutions:
-            if optimized["status"] == "UNKNOWN_NO_SOLUTION_FOUND":
-                raise FC27Error(
-                    "SBC_SOLVER_TIMEOUT",
-                    "The SBC optimizer reached its deadline before finding a feasible squad.",
-                    retryable=True,
-                    recovery="Narrow candidate_item_ids, reduce exclusions, or retry with a simpler objective.",
-                    details={"required_item_ids": objective["required_item_ids"]},
-                )
-            raise FC27Error(
-                "SBC_NO_SOLUTION",
-                "No owned-item combination satisfies the normalized challenge and Agent objective.",
-                recovery="Inspect required_item_ids and exclusions, widen candidate_item_ids, or acquire eligible items.",
-                details={
-                    "solver_status": optimized["status"],
-                    "required_item_ids": objective["required_item_ids"],
-                },
-            )
+            candidates.append((candidate, selected, validation))
+        return optimized, candidates
+
+    @staticmethod
+    def _empty_optimizer_result(status):
         return {
-            "challenge": challenge,
-            "objective": objective,
-            "candidate_pool": {
-                "eligible_count": len(items),
-                "excluded_counts": automatic_exclusions["counts"],
+            "status": status,
+            "complete": status == "INFEASIBLE_PROVEN",
+            "proof": {
+                "rating_optimality": "UNPROVEN",
+                "policy_optimality": "UNPROVEN",
+                "stages": [],
             },
-            "solver": {
-                "engine": "or-tools-cp-sat",
-                "status": optimized["status"],
-                "complete": optimized["complete"],
-                "proof": optimized["proof"],
-            },
-            "solution_count": len(solutions),
-            "solutions": solutions,
+            "solutions": [],
         }
+
+    def _market_candidates(
+        self, challenge, objective, player_count, proven_feasible_rating_cap
+    ):
+        max_overall = objective.get("max_item_overall")
+        if proven_feasible_rating_cap is not None:
+            max_overall = (
+                min(int(max_overall), int(proven_feasible_rating_cap))
+                if max_overall is not None
+                else int(proven_feasible_rating_cap)
+            )
+        rows = self.catalog.sbc_catalog_candidates(
+            challenge["constraints"], max_overall
+        )
+        card_ids = [int(row["card_ea_id"]) for row in rows]
+        if not card_ids:
+            return [], {
+                "catalog_count": 0,
+                "price_eligible_count": 0,
+                "price_unavailable_count": 0,
+                "modeled_market_count": 0,
+                "price_source": None,
+            }
+        snapshot = self.price_client.current_prices(card_ids)
+        persistence = self.runtime.record_reference_prices(snapshot["prices"])
+        account = self.runtime.account_summary() or {}
+        platform = str(account.get("platform") or "pc").lower()
+        prices = {
+            int(row["card_ea_id"]): row
+            for row in snapshot["prices"]
+            if row.get("platform") == platform
+            and row.get("status") == "market_or_normal"
+            and row.get("price") is not None
+            and not row.get("is_extinct")
+        }
+        market_items = []
+        for row in rows:
+            card_id = int(row["card_ea_id"])
+            price = prices.get(card_id)
+            if price is None:
+                continue
+            market_items.append(
+                {
+                    **row,
+                    "item_id": -card_id,
+                    "source": "market",
+                    "tradeable": False,
+                    "protected": False,
+                    "loan_uses_remaining": -1,
+                    "tradeable_value": 0,
+                    "purchase_price": int(price["price"]),
+                    "price_observed_at": price["observed_at"],
+                    "price_status": price["status"],
+                    "platform": platform,
+                }
+            )
+        modeled = self._reduce_market_candidates(market_items, player_count)
+        return modeled, {
+            "catalog_count": len(rows),
+            "price_eligible_count": len(market_items),
+            "price_unavailable_count": len(rows) - len(market_items),
+            "modeled_market_count": len(modeled),
+            "price_source": {
+                "name": "FUT.GG",
+                "observed_at": snapshot["observed_at"],
+                "manifest_version": snapshot["manifest_version"],
+                "hashes": snapshot["hashes"],
+                "platform": platform,
+                "persisted_changes": persistence,
+            },
+        }
+
+    @staticmethod
+    def _reduce_market_candidates(items, player_count):
+        groups = {}
+        for row in items:
+            key = (
+                int(row["overall"]),
+                row.get("quality"),
+                row.get("club_id"),
+                row.get("league_id"),
+                row.get("nation_id"),
+                tuple(sorted(str(value).upper() for value in row.get("positions") or [])),
+            )
+            by_base = groups.setdefault(key, {})
+            base_id = int(row["base_player_ea_id"])
+            current = by_base.get(base_id)
+            if current is None or (
+                int(row["purchase_price"]), int(row["card_ea_id"])
+            ) < (
+                int(current["purchase_price"]), int(current["card_ea_id"])
+            ):
+                by_base[base_id] = row
+        reduced = []
+        for by_base in groups.values():
+            reduced.extend(
+                sorted(
+                    by_base.values(),
+                    key=lambda row: (
+                        int(row["purchase_price"]),
+                        int(row["card_ea_id"]),
+                    ),
+                )[:player_count]
+            )
+        reduced.sort(
+            key=lambda row: (
+                int(row["overall"]),
+                int(row["purchase_price"]),
+                int(row["card_ea_id"]),
+            )
+        )
+        return reduced
+
+    @staticmethod
+    def _budget_summary(optimized, candidates):
+        best = candidates[0][2]["metrics"] if candidates else None
+        return {
+            "solver_status": optimized["status"],
+            "proof": optimized["proof"],
+            "candidate_count": len(candidates),
+            "best_rating_vector": best["rating_vector"] if best else None,
+            "best_chemistry": best["chemistry"] if best else None,
+        }
+
+    def _plan(
+        self,
+        challenge,
+        items,
+        validation,
+        candidate,
+        *,
+        plan_type,
+        purchase_budget_cap,
+        solution_id=None,
+    ):
+        owned_item_ids = [
+            int(row["item_id"]) for row in items if row.get("source") != "market"
+        ]
+        purchase_targets = [
+            {
+                "card_ea_id": int(row["card_ea_id"]),
+                "base_player_ea_id": int(row["base_player_ea_id"]),
+                "name": row.get("card_name") or row.get("common_name"),
+                "estimated_price": int(row["purchase_price"]),
+                "price_observed_at": row.get("price_observed_at"),
+                "platform": row.get("platform"),
+            }
+            for row in items
+            if row.get("source") == "market"
+        ]
+        slot_indices = [int(value) for value in challenge.get("slot_indices") or []]
+        slots = []
+        for index, row in enumerate(items):
+            slots.append(
+                {
+                    "slot_index": slot_indices[index],
+                    "position": challenge["slots"][index],
+                    "source": row.get("source", "owned"),
+                    "item_id": (
+                        int(row["item_id"])
+                        if row.get("source") != "market"
+                        else None
+                    ),
+                    "card_ea_id": int(row["card_ea_id"]),
+                    "base_player_ea_id": int(row["base_player_ea_id"]),
+                    "name": row.get("card_name") or row.get("common_name"),
+                    "overall": int(row["overall"]),
+                    "in_position": validation["metrics"]["in_position"][index],
+                    "chemistry": validation["metrics"]["player_chemistry"][index],
+                }
+            )
+        identity = canonical_json(
+            {
+                "challenge_id": challenge["challenge_id"],
+                "slots": [
+                    {
+                        "slot_index": row["slot_index"],
+                        "source": row["source"],
+                        "item_id": row["item_id"],
+                        "card_ea_id": row["card_ea_id"],
+                    }
+                    for row in slots
+                ],
+            }
+        )
+        account = self.runtime.account_summary() or {}
+        return {
+            "plan_id": "plan-" + hashlib.sha256(identity.encode("utf-8")).hexdigest()[:24],
+            "plan_type": plan_type,
+            "purchase_budget_cap": purchase_budget_cap,
+            "purchase_count": len(purchase_targets),
+            "owned_count": len(owned_item_ids),
+            "owned_item_ids": owned_item_ids,
+            "purchase_targets": purchase_targets,
+            "estimated_purchase_cost": sum(
+                row["estimated_price"] for row in purchase_targets
+            ),
+            "owned_tradeable_count": candidate["objective_components"][
+                "tradeable_item_count"
+            ],
+            "owned_opportunity_cost": candidate["objective_components"][
+                "tradeable_value"
+            ],
+            "metrics": validation["metrics"],
+            "constraint_results": validation["constraint_results"],
+            "slots": slots,
+            "solver_status": candidate["status"],
+            "optimality_scope": {
+                "objective": "complete_descending_rating_vector",
+                "candidate_domain": {
+                    "club_only": "eligible_owned_items",
+                    "market_benchmark": "eligible_priced_market_cards",
+                }.get(plan_type, "eligible_owned_and_priced_market_cards"),
+                "purchase_limit": purchase_budget_cap,
+            },
+            "proof": candidate["proof"],
+            "snapshot_refs": {
+                "inventory_sync_id": account.get("last_full_sync_id"),
+                "challenge_observed_at": challenge.get("observed_at"),
+                "price_observed_at": sorted(
+                    {
+                        row["price_observed_at"]
+                        for row in purchase_targets
+                        if row.get("price_observed_at")
+                    }
+                ),
+            },
+            "market_verification_required": bool(purchase_targets),
+            "executable": not purchase_targets,
+            "solution_id": solution_id,
+        }
+
+    @staticmethod
+    def _deduplicate_plans(plans):
+        by_structure = {}
+        for plan in plans:
+            key = tuple(
+                (
+                    row["slot_index"],
+                    row["source"],
+                    row["item_id"],
+                    row["card_ea_id"],
+                )
+                for row in plan["slots"]
+            )
+            current = by_structure.get(key)
+            if current is None or plan["purchase_budget_cap"] < current[
+                "purchase_budget_cap"
+            ]:
+                by_structure[key] = plan
+        return sorted(
+            by_structure.values(),
+            key=lambda plan: (
+                plan["metrics"]["rating_vector"],
+                plan["purchase_count"],
+                plan["owned_tradeable_count"],
+                plan["owned_opportunity_cost"],
+                plan["estimated_purchase_cost"],
+                plan["plan_id"],
+            ),
+        )
 
     @classmethod
     def _present(cls, value, include_raw):

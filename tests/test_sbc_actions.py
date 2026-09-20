@@ -213,7 +213,15 @@ class SbcActionTest(unittest.TestCase):
         self.sbc = SbcService(self.runtime, self.catalog)
         payload = browser_challenge()
         self.sbc.capture_challenge(payload)
-        self.solution = self.sbc.solve("4", "16", {"max_tradeable_value": 0}, 1)["solutions"][0]
+        self.solution = self.sbc.solve(
+            "4",
+            "16",
+            {
+                "candidate_item_ids": list(range(1, 12)),
+                "max_tradeable_value": 0,
+            },
+            1,
+        )["solutions"][0]
         self.policy_path = root / "policy.json"
 
     def tearDown(self):
@@ -265,7 +273,13 @@ class SbcActionTest(unittest.TestCase):
         payload = browser_challenge(player_count=player_count)
         self.sbc.capture_challenge(payload)
         self.solution = self.sbc.solve(
-            "4", "16", {"max_tradeable_value": 0}, 1
+            "4",
+            "16",
+            {
+                "candidate_item_ids": list(range(1, 12)),
+                "max_tradeable_value": 0,
+            },
+            1,
         )["solutions"][0]
         self.assertEqual(len(self.solution["item_ids"]), player_count)
 

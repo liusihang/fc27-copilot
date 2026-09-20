@@ -1,6 +1,7 @@
 import sqlite3
 import re
 import unicodedata
+from collections import defaultdict
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -121,6 +122,78 @@ class CatalogDB:
             for key in ("is_icon", "is_hero", "is_special", "is_evolution"):
                 value[key] = bool(value[key])
         return facts
+
+    def sbc_catalog_candidates(self, constraints, max_overall=None):
+        where = [
+            "c.is_icon = 0",
+            "c.is_hero = 0",
+            "c.is_special = 0",
+            "c.is_evolution = 0",
+            "c.is_sbc = 0",
+            "c.is_objective = 0",
+        ]
+        params = []
+        quality_rank = {"BRONZE": 1, "SILVER": 2, "GOLD": 3}
+        allowed_qualities = set(quality_rank)
+        for constraint in constraints:
+            if constraint.get("type") != "squad_quality":
+                continue
+            target = quality_rank[str(constraint["quality"]).upper()]
+            operator = constraint["operator"]
+            if operator == "min":
+                allowed_qualities &= {
+                    quality for quality, rank in quality_rank.items() if rank >= target
+                }
+            elif operator == "max":
+                allowed_qualities &= {
+                    quality for quality, rank in quality_rank.items() if rank <= target
+                }
+            else:
+                allowed_qualities &= {
+                    quality for quality, rank in quality_rank.items() if rank == target
+                }
+        if not allowed_qualities:
+            return []
+        where.append(
+            f"UPPER(c.quality) IN ({','.join('?' for _ in allowed_qualities)})"
+        )
+        params.extend(sorted(allowed_qualities))
+        if max_overall is not None:
+            where.append("c.overall <= ?")
+            params.append(int(max_overall))
+
+        with self.connect() as connection:
+            rows = [
+                dict(row)
+                for row in connection.execute(
+                    f"""SELECT c.card_ea_id, c.base_player_ea_id, c.card_name,
+                               p.common_name, c.overall,
+                               LOWER(c.quality) AS quality, c.club_id,
+                               c.league_id, p.nation_id
+                        FROM cards c JOIN players p USING(base_player_ea_id)
+                        WHERE {' AND '.join(where)}
+                        ORDER BY c.overall, c.card_ea_id""",
+                    params,
+                )
+            ]
+            positions = defaultdict(list)
+            for row in connection.execute(
+                """SELECT cp.card_ea_id, pos.code
+                   FROM card_positions cp JOIN positions pos USING(position_id)
+                   JOIN cards c USING(card_ea_id)
+                   WHERE c.is_icon = 0 AND c.is_hero = 0
+                     AND c.is_special = 0 AND c.is_evolution = 0
+                     AND c.is_sbc = 0 AND c.is_objective = 0
+                   ORDER BY cp.card_ea_id, cp.is_primary DESC, pos.code"""
+            ):
+                positions[int(row[0])].append(row[1])
+        for row in rows:
+            row["positions"] = positions.get(int(row["card_ea_id"]), [])
+            row["is_icon"] = False
+            row["is_hero"] = False
+            row["is_special"] = False
+            row["is_evolution"] = False
+        return rows
 
     def query(self, request):
         request = request or {}

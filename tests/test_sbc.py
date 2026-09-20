@@ -12,9 +12,38 @@ from fc27.sbc_optimizer import chemistry_score
 class FakeCatalog:
     def __init__(self, facts):
         self.facts = facts
+        self.market_candidates = []
 
     def sbc_item_facts(self, card_ea_ids):
         return {card_id: self.facts[card_id] for card_id in card_ea_ids if card_id in self.facts}
+
+    def sbc_catalog_candidates(self, constraints, max_overall=None):
+        rows = list(self.market_candidates)
+        if max_overall is not None:
+            rows = [row for row in rows if row["overall"] <= max_overall]
+        return rows
+
+
+class FakePriceClient:
+    def current_prices(self, card_ea_ids):
+        observed_at = "2026-09-20T12:00:00Z"
+        return {
+            "observed_at": observed_at,
+            "manifest_version": 1,
+            "hashes": {"index": "i", "ps5": "p", "pc": "c"},
+            "prices": [
+                {
+                    "card_ea_id": card_ea_id,
+                    "platform": "pc",
+                    "observed_at": observed_at,
+                    "price": 100 + offset * 50,
+                    "status": "market_or_normal",
+                    "is_extinct": False,
+                }
+                for offset, card_ea_id in enumerate(sorted(card_ea_ids))
+            ],
+            "missing_card_ea_ids": [],
+        }
 
 
 def bronze_requirement():
@@ -165,7 +194,9 @@ class SbcServiceTest(unittest.TestCase):
                     "is_evolution": False,
                 }
             connection.commit()
-        self.service = SbcService(self.runtime, FakeCatalog(facts))
+        self.service = SbcService(
+            self.runtime, FakeCatalog(facts), price_client=FakePriceClient()
+        )
 
     def tearDown(self):
         self.directory.cleanup()
@@ -357,6 +388,61 @@ class SbcServiceTest(unittest.TestCase):
                 max_solutions=1,
             )
         self.assertEqual(context.exception.code, "SBC_NO_SOLUTION")
+
+    def test_planner_returns_club_and_bounded_purchase_classes(self):
+        payload = brick_challenge_payload(3)
+        challenge = self.service.capture_challenges(payload)["challenges"][0]
+        for item_id in range(1, 16):
+            self.service.catalog.facts[1000 + item_id]["overall"] = 70
+        self.service.catalog.market_candidates = [
+            {
+                "card_ea_id": 2000 + index,
+                "base_player_ea_id": 3000 + index,
+                "overall": 60,
+                "quality": "bronze",
+                "club_id": 100 + index,
+                "league_id": 200 + index,
+                "nation_id": 300 + index,
+                "positions": ["ST"],
+                "is_special": False,
+                "is_evolution": False,
+            }
+            for index in range(1, 4)
+        ]
+        result = self.service.solve(
+            "1", challenge["challenge_id"], {}, max_solutions=1
+        )
+        by_type = {plan["plan_type"]: plan for plan in result["plans"]}
+        self.assertEqual(
+            {
+                "club_only",
+                "hybrid_one_purchase",
+                "hybrid_two_purchase",
+                "market_benchmark",
+            },
+            set(by_type),
+        )
+        self.assertEqual(by_type["club_only"]["metrics"]["rating_vector"], [70] * 3)
+        self.assertEqual(
+            by_type["hybrid_one_purchase"]["metrics"]["rating_vector"],
+            [70, 70, 60],
+        )
+        self.assertEqual(
+            by_type["hybrid_two_purchase"]["metrics"]["rating_vector"],
+            [70, 60, 60],
+        )
+        self.assertEqual(
+            by_type["market_benchmark"]["metrics"]["rating_vector"],
+            [60, 60, 60],
+        )
+        self.assertTrue(by_type["club_only"]["executable"])
+        self.assertFalse(by_type["hybrid_one_purchase"]["executable"])
+        self.assertTrue(
+            by_type["hybrid_one_purchase"]["market_verification_required"]
+        )
+        self.assertEqual(result["solution_count"], 1)
+        self.assertEqual(result["candidate_pool"]["catalog_count"], 3)
+        self.assertEqual(result["actions_performed"], [])
 
     def test_optimizer_rating_model_matches_independent_validator(self):
         self.service.capture_challenges(
