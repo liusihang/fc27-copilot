@@ -1854,7 +1854,9 @@
         });
       }
       squad.removeAllItems();
-      squad.setPlayers(items, true);
+      expectedSlotIndices.forEach((slotIndex, index) => {
+        squad.addItemToSlot(slotIndex, items[index]);
+      });
       const placedSlotIndices = savedSbcSlotIndices(squad);
       const placedItemIds = savedSbcItemIds(squad);
       const expectedItemIds = (params.item_ids || []).map(Number);
