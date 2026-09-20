@@ -1016,7 +1016,7 @@ TOOLS = [
     ),
     tool(
         "sbc_solve",
-        "Optimize and persist exact owned-item candidates for one persisted set_id and challenge_id. Use after sbc_refresh and a complete club sync. Resolve mandatory players through club_query and pass item_id values. Returns validated solutions and solver evidence; unsupported constraints block solving. It never saves or submits to EA.",
+        "Read the current active squad, then optimize and persist exact owned-item candidates for one persisted set_id and challenge_id. Use after sbc_refresh and a complete club sync. Special cards, Evolution cards, active-squad items, protected items, loans, and explicit exclusions are unavailable. Resolve mandatory players through club_query and pass item_id values. Returns validated solutions, exclusion counts, and solver evidence; unsupported constraints block solving. It never saves or submits to EA.",
         object_schema(
             {
                 "set_id": described(
@@ -1044,7 +1044,7 @@ TOOLS = [
             "readOnlyHint": False,
             "destructiveHint": False,
             "idempotentHint": False,
-            "openWorldHint": False,
+            "openWorldHint": True,
         },
     ),
     tool(

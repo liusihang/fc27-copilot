@@ -12,17 +12,41 @@ CHEMISTRY_THRESHOLDS = {
 }
 
 
-def chemistry_score(items):
-    total = 0
+def chemistry_score(items, slots):
+    if len(items) != len(slots):
+        raise ValueError("Chemistry requires one assigned field slot per item.")
+    in_position = []
+    for row, slot in zip(items, slots):
+        positions = {str(value).upper() for value in row.get("positions") or []}
+        in_position.append(str(slot).upper() in positions)
+
+    counts_by_attribute = {}
     for attribute, thresholds in CHEMISTRY_THRESHOLDS.items():
         counts = defaultdict(int)
-        for row in items:
+        for row, active in zip(items, in_position):
+            if not active:
+                continue
             value = row.get(attribute)
             if value is not None:
                 counts[value] += 1
-        for count in counts.values():
-            total += count * sum(count >= threshold for threshold in thresholds)
-    return total
+        counts_by_attribute[attribute] = counts
+
+    per_player = []
+    for row, active in zip(items, in_position):
+        if not active:
+            per_player.append(0)
+            continue
+        points = 0
+        for attribute, thresholds in CHEMISTRY_THRESHOLDS.items():
+            value = row.get(attribute)
+            count = counts_by_attribute[attribute].get(value, 0)
+            points += sum(count >= threshold for threshold in thresholds)
+        per_player.append(min(3, points))
+    return {
+        "total": sum(per_player),
+        "per_player": per_player,
+        "in_position": in_position,
+    }
 
 
 STATUS_NAMES = {
@@ -44,12 +68,17 @@ class SbcOptimizer:
         selected = [model.new_bool_var(f"item_{row['item_id']}") for row in items]
         model.add(sum(selected) == slot_count)
         slot_assignments = None
-        if (
-            any(row.get("positions") for row in items)
-            and any(not str(slot).startswith("ITEM_") for slot in challenge.get("slots") or [])
-        ):
-            slot_assignments = self._add_slot_assignments(
+        chemistry_model = None
+        chemistry_required = any(
+            constraint["type"] in ("chemistry", "all_players_chemistry_points")
+            for constraint in challenge["constraints"]
+        )
+        if chemistry_required:
+            slot_assignments, in_position = self._add_slot_assignments(
                 model, selected, items, challenge, slot_count
+            )
+            chemistry_model = self._build_chemistry_model(
+                model, items, in_position, slot_count
             )
 
         indexes_by_item_id = {
@@ -65,7 +94,14 @@ class SbcOptimizer:
         if objective.get("max_tradeable_value") is not None:
             model.add(tradeable_value <= int(objective["max_tradeable_value"]))
 
-        self._add_challenge_constraints(model, selected, items, challenge, slot_count)
+        self._add_challenge_constraints(
+            model,
+            selected,
+            items,
+            challenge,
+            slot_count,
+            chemistry_model,
+        )
         model.minimize(
             self._objective_expression(
                 selected,
@@ -129,19 +165,24 @@ class SbcOptimizer:
             ]
             for item_index in range(len(items))
         ]
+        in_position_vars = []
         for item_index, row in enumerate(items):
             model.add(sum(assignments[item_index]) == selected[item_index])
             positions = {str(value).upper() for value in row.get("positions") or []}
-            for slot_index, slot in enumerate(slots):
-                slot_name = str(slot).upper()
-                if positions and slot_name not in positions:
-                    model.add(assignments[item_index][slot_index] == 0)
+            compatible = [
+                assignments[item_index][slot_index]
+                for slot_index, slot in enumerate(slots)
+                if str(slot).upper() in positions
+            ]
+            in_position = model.new_bool_var(f"in_position_{item_index}")
+            model.add(in_position == sum(compatible))
+            in_position_vars.append(in_position)
         for slot_index in range(slot_count):
             model.add(
                 sum(assignments[item_index][slot_index] for item_index in range(len(items)))
                 == 1
             )
-        return assignments
+        return assignments, in_position_vars
 
     @staticmethod
     def _slot_item_ids(solver, assignments, items, slot_count):
@@ -155,7 +196,15 @@ class SbcOptimizer:
             slot_item_ids.append(int(items[item_index]["item_id"]))
         return slot_item_ids
 
-    def _add_challenge_constraints(self, model, selected, items, challenge, slot_count):
+    def _add_challenge_constraints(
+        self,
+        model,
+        selected,
+        items,
+        challenge,
+        slot_count,
+        chemistry_model,
+    ):
         for index, constraint in enumerate(challenge["constraints"]):
             kind = constraint["type"]
             if kind == "squad_quality":
@@ -278,12 +327,23 @@ class SbcOptimizer:
                     model, maximum, constraint["operator"], int(constraint["value"])
                 )
             elif kind == "chemistry":
-                chemistry = self._chemistry_expression(
-                    model, selected, items, slot_count, index
-                )
                 self._add_comparison(
-                    model, chemistry, constraint["operator"], int(constraint["value"])
+                    model,
+                    chemistry_model["total"],
+                    constraint["operator"],
+                    int(constraint["value"]),
                 )
+            elif kind == "all_players_chemistry_points":
+                value = int(constraint["value"])
+                for item_index, chemistry in enumerate(
+                    chemistry_model["per_item"]
+                ):
+                    if constraint["operator"] == "min":
+                        model.add(chemistry >= value * selected[item_index])
+                    elif constraint["operator"] == "max":
+                        model.add(chemistry <= value)
+                    else:
+                        model.add(chemistry == value * selected[item_index])
 
     @staticmethod
     def _add_comparison(model, expression, operator, value):
@@ -345,16 +405,17 @@ class SbcOptimizer:
             groups[row.get(attribute)].append(index)
         return groups
 
-    def _chemistry_expression(self, model, selected, items, slot_count, index):
-        expressions = []
+    def _build_chemistry_model(self, model, items, in_position, slot_count):
+        group_points = {}
         for attribute, thresholds in CHEMISTRY_THRESHOLDS.items():
             groups = self._groups(items, attribute, include_none=False)
-            for group_index, item_indexes in enumerate(groups.values()):
-                count = sum(selected[item_index] for item_index in item_indexes)
+            group_points[attribute] = {}
+            for group_index, (value, item_indexes) in enumerate(groups.items()):
+                count = sum(in_position[item_index] for item_index in item_indexes)
                 points = model.new_int_var(
                     0,
                     len(thresholds),
-                    f"constraint_{index}_{attribute}_points_{group_index}",
+                    f"chemistry_{attribute}_points_{group_index}",
                 )
                 model.add_allowed_assignments(
                     [count, points],
@@ -363,14 +424,24 @@ class SbcOptimizer:
                         for size in range(slot_count + 1)
                     ],
                 )
-                contribution = model.new_int_var(
-                    0,
-                    slot_count * len(thresholds),
-                    f"constraint_{index}_{attribute}_contribution_{group_index}",
-                )
-                model.add_multiplication_equality(contribution, [count, points])
-                expressions.append(contribution)
-        return sum(expressions)
+                group_points[attribute][value] = points
+
+        per_item = []
+        for item_index, row in enumerate(items):
+            attribute_points = [
+                group_points[attribute].get(row.get(attribute), 0)
+                for attribute in CHEMISTRY_THRESHOLDS
+            ]
+            raw_points = model.new_int_var(0, 9, f"chemistry_raw_{item_index}")
+            model.add(raw_points == sum(attribute_points))
+            capped_points = model.new_int_var(0, 3, f"chemistry_capped_{item_index}")
+            model.add_min_equality(capped_points, [raw_points, 3])
+            chemistry = model.new_int_var(0, 3, f"chemistry_item_{item_index}")
+            model.add_multiplication_equality(
+                chemistry, [capped_points, in_position[item_index]]
+            )
+            per_item.append(chemistry)
+        return {"total": sum(per_item), "per_item": per_item}
 
     def _distinct_count(self, model, selected, items, attribute, slot_count, index):
         used = []

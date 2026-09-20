@@ -29,6 +29,23 @@ class FakeBridge:
 
     def call(self, method, params):
         self.calls.append((method, params))
+        if method == "getSquads" and method not in self.response:
+            return {
+                "ok": True,
+                "data": {
+                    "status": 200,
+                    "active_squad_id": 1,
+                    "squads": [
+                        {
+                            "squad_id": 1,
+                            "name": "Main",
+                            "formation": {"id": 8, "name": "f433"},
+                            "slots": [],
+                            "tactics": [],
+                        }
+                    ],
+                },
+            }
         value = self.response[method]
         if callable(value):
             value = value()
@@ -530,7 +547,10 @@ class SbcActionTest(unittest.TestCase):
         self.assertEqual(
             saved["actions"][0]["error_code"], "SBC_SAVE_OUTCOME_UNKNOWN"
         )
-        self.assertEqual([method for method, _ in bridge.calls], ["saveSbcSquad"])
+        self.assertEqual(
+            [method for method, _ in bridge.calls],
+            ["getSquads", "saveSbcSquad"],
+        )
         solution = self.runtime.get_sbc_solution(self.solution["solution_id"])
         self.assertEqual(solution["status"], "validated")
         target = self.runtime.sbc_save_reconciliation_target("save_sbc_squad-1")
@@ -749,7 +769,7 @@ class SbcActionTest(unittest.TestCase):
         )
         self.assertEqual(
             [method for method, _ in bridge.calls],
-            ["readSavedSbcSquad", "submitSbc"],
+            ["getSquads", "readSavedSbcSquad", "submitSbc"],
         )
         target = self.runtime.sbc_submit_reconciliation_target("submit_sbc-1")
         self.assertFalse(target["resolved"])
@@ -807,7 +827,7 @@ class SbcActionTest(unittest.TestCase):
         )
         self.assertEqual(
             [method for method, _ in bridge.calls],
-            ["readSavedSbcSquad", "submitSbc"],
+            ["getSquads", "readSavedSbcSquad", "submitSbc"],
         )
         target = self.runtime.sbc_submit_reconciliation_target("submit_sbc-1")
         self.assertFalse(target["resolved"])
@@ -838,7 +858,12 @@ class SbcActionTest(unittest.TestCase):
         self.assertEqual(error["details"]["submit"]["submitted_item_ids"], item_ids)
         self.assertEqual(
             [method for method, _ in bridge.calls],
-            ["readSavedSbcSquad", "submitSbc", "readSbcSubmissionState"],
+            [
+                "getSquads",
+                "readSavedSbcSquad",
+                "submitSbc",
+                "readSbcSubmissionState",
+            ],
         )
 
     def test_submit_rejects_protected_or_missing_items_before_ea_contact(self):
@@ -1058,7 +1083,7 @@ class SbcActionTest(unittest.TestCase):
         )
         self.assertEqual(
             [method for method, _ in bridge.calls],
-            ["saveSbcSquad", "readSavedSbcSquad"],
+            ["getSquads", "saveSbcSquad", "readSavedSbcSquad"],
         )
         target = self.runtime.sbc_save_reconciliation_target("save_sbc_squad-1")
         self.assertEqual(target["expected_sync_id"], 1)

@@ -99,7 +99,8 @@ class CatalogDB:
         with self.connect() as connection:
             rows = connection.execute(
                 f"""SELECT c.card_ea_id, c.overall, LOWER(c.quality) AS quality,
-                           c.club_id, c.league_id, p.nation_id
+                           c.club_id, c.league_id, p.nation_id, c.rarity_id,
+                           c.is_icon, c.is_hero, c.is_special, c.is_evolution
                     FROM cards c JOIN players p USING(base_player_ea_id)
                     WHERE c.card_ea_id IN ({placeholders})""",
                 card_ea_ids,
@@ -116,6 +117,8 @@ class CatalogDB:
         facts = {int(row["card_ea_id"]): dict(row) for row in rows}
         for card_ea_id, value in facts.items():
             value["positions"] = positions.get(card_ea_id, [])
+            for key in ("is_icon", "is_hero", "is_special", "is_evolution"):
+                value[key] = bool(value[key])
         return facts
 
     def query(self, request):

@@ -340,6 +340,31 @@ class MCPTest(unittest.TestCase):
         self.assertEqual(cached["meta"]["source"], "runtime")
         self.assertEqual(cached["data"]["sets"][0]["set_id"], "4")
 
+    def test_sbc_solve_reads_active_squad_items_before_optimization(self):
+        self.daemon.bridge = IdentityBridge()
+        self.daemon.call_tool("sync_club", {})
+        captured = {}
+
+        class CaptureService:
+            def solve(
+                self,
+                set_id,
+                challenge_id,
+                objective,
+                max_solutions,
+                *,
+                reserved_item_ids,
+            ):
+                captured["reserved_item_ids"] = reserved_item_ids
+                return {"solution_count": 0, "solutions": []}
+
+        self.daemon._sbc_service = lambda: CaptureService()
+        response = self.daemon.call_tool(
+            "sbc_solve", {"set_id": "4", "challenge_id": "16"}
+        )
+        self.assertTrue(response["ok"])
+        self.assertEqual(captured["reserved_item_ids"], [100])
+
     def test_catalog_query_returns_uniform_envelope(self):
         response = self.daemon.mcp.handle({"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "catalog_query", "arguments": {"card_ea_ids": [200]}}})
         result = response["result"]["structuredContent"]

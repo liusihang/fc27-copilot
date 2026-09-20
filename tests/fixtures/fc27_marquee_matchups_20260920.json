@@ -1,0 +1,80 @@
+{
+  "set": {
+    "id": 16,
+    "name": "Marquee Matchups",
+    "repeatable": false,
+    "rewards": [],
+    "raw": {"id": 16, "name": "Marquee Matchups"}
+  },
+  "challenges": [
+    {
+      "id": 37,
+      "set_id": 16,
+      "name": "FC Porto v SL Benfica",
+      "status": "IN_PROGRESS",
+      "repeatable": false,
+      "completed": false,
+      "challenge_type": "OPEN_CHALLENGE",
+      "player_count": 11,
+      "slot_indices": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+      "formation": "f451",
+      "slots": ["GK", "RB", "CB", "CB", "LB", "RM", "CM", "LM", "CAM", "CAM", "ST"],
+      "rewards": [],
+      "requirements": [
+        {"kvPairs": {"_collection": {"11": [308]}}, "count": 2, "scope": 0},
+        {"kvPairs": {"_collection": {"10": [38]}}, "count": 2, "scope": 0},
+        {"kvPairs": {"_collection": {"8": [6]}}, "count": -1, "scope": 1},
+        {"kvPairs": {"_collection": {"17": [3]}}, "count": 1, "scope": 0},
+        {"kvPairs": {"_collection": {"3": [2]}}, "count": -1, "scope": 0},
+        {"kvPairs": {"_collection": {"35": [18]}}, "count": -1, "scope": 0}
+      ],
+      "raw": {"id": 37, "setId": 16, "formation": "f451", "type": "OPEN_CHALLENGE"}
+    },
+    {
+      "id": 38,
+      "set_id": 16,
+      "name": "Paris Saint-Germain v Olympique de Marseille",
+      "status": "IN_PROGRESS",
+      "repeatable": false,
+      "completed": false,
+      "challenge_type": "OPEN_CHALLENGE",
+      "player_count": 11,
+      "slot_indices": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+      "formation": "f532",
+      "slots": ["GK", "RB", "CB", "CB", "CB", "LB", "CDM", "CM", "CM", "ST", "ST"],
+      "rewards": [],
+      "requirements": [
+        {"kvPairs": {"_collection": {"12": [73, 219]}}, "count": 1, "scope": 0},
+        {"kvPairs": {"_collection": {"10": [18]}}, "count": 2, "scope": 0},
+        {"kvPairs": {"_collection": {"5": [5]}}, "count": -1, "scope": 1},
+        {"kvPairs": {"_collection": {"17": [3]}}, "count": 1, "scope": 0},
+        {"kvPairs": {"_collection": {"3": [2]}}, "count": -1, "scope": 0},
+        {"kvPairs": {"_collection": {"35": [22]}}, "count": -1, "scope": 0}
+      ],
+      "raw": {"id": 38, "setId": 16, "formation": "f532", "type": "OPEN_CHALLENGE"}
+    },
+    {
+      "id": 39,
+      "set_id": 16,
+      "name": "Atlético de Madrid v Real Madrid",
+      "status": "IN_PROGRESS",
+      "repeatable": false,
+      "completed": false,
+      "challenge_type": "OPEN_CHALLENGE",
+      "player_count": 11,
+      "slot_indices": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+      "formation": "f5212",
+      "slots": ["GK", "RB", "CB", "CB", "CB", "LB", "CM", "CM", "CAM", "ST", "ST"],
+      "rewards": [],
+      "requirements": [
+        {"kvPairs": {"_collection": {"12": [240, 243]}}, "count": 2, "scope": 0},
+        {"kvPairs": {"_collection": {"11": [53]}}, "count": 2, "scope": 0},
+        {"kvPairs": {"_collection": {"4": [4]}}, "count": -1, "scope": 0},
+        {"kvPairs": {"_collection": {"6": [3]}}, "count": -1, "scope": 1},
+        {"kvPairs": {"_collection": {"19": [75]}}, "count": -1, "scope": 0},
+        {"kvPairs": {"_collection": {"35": [26]}}, "count": -1, "scope": 0}
+      ],
+      "raw": {"id": 39, "setId": 16, "formation": "f5212", "type": "OPEN_CHALLENGE"}
+    }
+  ]
+}

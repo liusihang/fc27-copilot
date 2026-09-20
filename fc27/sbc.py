@@ -112,7 +112,15 @@ class SbcService:
             result = {"challenge": challenge}
         return self._present(result, include_raw)
 
-    def solve(self, set_id, challenge_id, objective=None, max_solutions=5):
+    def solve(
+        self,
+        set_id,
+        challenge_id,
+        objective=None,
+        max_solutions=5,
+        *,
+        reserved_item_ids=None,
+    ):
         objective = self._normalize_objective(objective)
         challenge = self.runtime.get_sbc_challenge(challenge_id)
         if challenge is None or str(challenge.get("set_id")) != str(set_id):
@@ -129,9 +137,22 @@ class SbcService:
                 recovery="Inspect unsupported_constraints and implement those requirement types before solving.",
                 details={"unsupported_constraints": unsupported},
             )
-        items = self._candidate_items(objective)
+        items, automatic_exclusions = self._candidate_items(
+            objective, reserved_item_ids or []
+        )
         items = self._apply_quality_prefilter(items, challenge["constraints"])
-        self._validate_required_items(challenge, items, objective)
+        if any(
+            constraint["type"] in ("chemistry", "all_players_chemistry_points")
+            for constraint in challenge["constraints"]
+        ) and any(str(slot).startswith("ITEM_") for slot in challenge["slots"]):
+            raise FC27Error(
+                "SBC_SCHEMA_UNSUPPORTED",
+                "Chemistry solving requires exact EA position metadata for every fillable slot.",
+                recovery="Refresh the active challenge after reloading the extension, then retry.",
+            )
+        self._validate_required_items(
+            challenge, items, objective, automatic_exclusions["by_item_id"]
+        )
         player_count = self._player_count(challenge)
         if len(items) < player_count:
             raise FC27Error(
@@ -167,6 +188,10 @@ class SbcService:
                 "objective_components": candidate["objective_components"],
                 "wall_time_seconds": candidate["wall_time_seconds"],
             }
+            validation["candidate_pool"] = {
+                "eligible_count": len(items),
+                "excluded_counts": automatic_exclusions["counts"],
+            }
             solution = self._solution(challenge, selected, objective, validation)
             self.runtime.save_sbc_solution(solution)
             solutions.append(solution)
@@ -191,6 +216,10 @@ class SbcService:
         return {
             "challenge": challenge,
             "objective": objective,
+            "candidate_pool": {
+                "eligible_count": len(items),
+                "excluded_counts": automatic_exclusions["counts"],
+            },
             "solver": {
                 "engine": "or-tools-cp-sat",
                 "status": optimized["status"],
@@ -214,7 +243,9 @@ class SbcService:
             return [cls._present(item, include_raw) for item in value]
         return value
 
-    def validate_solution(self, solution_id, expected_sync_id=None):
+    def validate_solution(
+        self, solution_id, expected_sync_id=None, *, reserved_item_ids=None
+    ):
         solution = self.runtime.get_sbc_solution(solution_id)
         if solution is None:
             raise FC27Error("SBC_SOLUTION_NOT_FOUND", f"SBC solution {solution_id} was not found.")
@@ -247,7 +278,12 @@ class SbcService:
         item_rows = self.runtime.items_by_ids(solution["item_ids"])
         facts = self.catalog.sbc_item_facts([row["card_ea_id"] for row in item_rows])
         items = [{**row, **facts.get(row["card_ea_id"], {})} for row in item_rows]
-        validation = self.validate(challenge, items, solution["objective"])
+        validation = self.validate(
+            challenge,
+            items,
+            solution["objective"],
+            reserved_item_ids=reserved_item_ids,
+        )
         if not validation["valid"]:
             raise FC27Error(
                 "SBC_NOT_ELIGIBLE",
@@ -257,8 +293,9 @@ class SbcService:
             )
         return {"solution": solution, "challenge": challenge, "validation": validation}
 
-    def validate(self, challenge, items, objective=None):
+    def validate(self, challenge, items, objective=None, *, reserved_item_ids=None):
         objective = objective or {}
+        reserved_item_ids = {int(value) for value in reserved_item_ids or []}
         failures = []
         item_ids = [int(row["item_id"]) for row in items]
         player_count = self._player_count(challenge)
@@ -273,6 +310,12 @@ class SbcService:
                 failures.append({"type": "protected_item", "item_id": row["item_id"]})
             if row.get("loan_uses_remaining") not in (None, -1):
                 failures.append({"type": "loan_item", "item_id": row["item_id"]})
+            if row.get("is_evolution"):
+                failures.append({"type": "evolution_item", "item_id": row["item_id"]})
+            elif row.get("is_special"):
+                failures.append({"type": "special_item", "item_id": row["item_id"]})
+            if int(row["item_id"]) in reserved_item_ids:
+                failures.append({"type": "active_squad_item", "item_id": row["item_id"]})
         tradeable_value = sum(int(row.get("tradeable_value") or 0) for row in items)
         limit = objective.get("max_tradeable_value")
         if limit is not None and tradeable_value > int(limit):
@@ -283,7 +326,7 @@ class SbcService:
             failures.append(
                 {"type": "required_item_ids", "missing_item_ids": missing_required}
             )
-        metrics = self._metrics(items)
+        metrics = self._metrics(items, challenge["slots"])
         for constraint in challenge["constraints"]:
             actual = self._constraint_actual(constraint, items, metrics)
             if not self._compare(actual, constraint["operator"], constraint["value"]):
@@ -393,7 +436,9 @@ class SbcService:
             "max_item_overall": max_item_overall,
         }
 
-    def _validate_required_items(self, challenge, items, objective):
+    def _validate_required_items(
+        self, challenge, items, objective, automatic_exclusions
+    ):
         required_item_ids = objective["required_item_ids"]
         player_count = self._player_count(challenge)
         if len(required_item_ids) > player_count:
@@ -438,7 +483,9 @@ class SbcService:
                 reasons.append(
                     {
                         "item_id": item_id,
-                        "reason": "catalog_or_objective_filter",
+                        "reason": automatic_exclusions.get(
+                            item_id, "catalog_or_objective_filter"
+                        ),
                     }
                 )
         if reasons:
@@ -464,16 +511,29 @@ class SbcService:
                 },
             )
 
-    def _candidate_items(self, objective):
+    def _candidate_items(self, objective, reserved_item_ids):
+        reserved_item_ids = {int(value) for value in reserved_item_ids}
         rows = self.runtime.sbc_candidate_items(
             candidate_item_ids=objective.get("candidate_item_ids"),
             exclude_item_ids=objective.get("exclude_item_ids"),
         )
         facts = self.catalog.sbc_item_facts([row["card_ea_id"] for row in rows])
         items = []
+        exclusions = {}
         for row in rows:
             fact = facts.get(row["card_ea_id"])
             if fact is None:
+                continue
+            item_id = int(row["item_id"])
+            reason = None
+            if item_id in reserved_item_ids:
+                reason = "active_squad"
+            elif fact.get("is_evolution"):
+                reason = "evolution"
+            elif fact.get("is_special"):
+                reason = "special"
+            if reason:
+                exclusions[item_id] = reason
                 continue
             value = 0
             if row["tradeable"]:
@@ -491,7 +551,8 @@ class SbcService:
                 row["item_id"],
             )
         )
-        return items
+        counts = dict(sorted(Counter(exclusions.values()).items()))
+        return items, {"by_item_id": exclusions, "counts": counts}
 
     @staticmethod
     def _apply_quality_prefilter(items, constraints):
@@ -501,10 +562,11 @@ class SbcService:
         return [row for row in items if row.get("quality") == exact[0]]
 
     @staticmethod
-    def _metrics(items):
+    def _metrics(items, slots):
         ratings = [int(row["overall"]) for row in items]
         average = sum(ratings) / len(ratings) if ratings else 0
         adjusted = sum(ratings) + sum(max(rating - average, 0) for rating in ratings)
+        chemistry = chemistry_score(items, slots)
         return {
             "team_rating": math.floor(adjusted / len(ratings)) if ratings else 0,
             "nation_count": len({row.get("nation_id") for row in items}),
@@ -514,7 +576,9 @@ class SbcService:
             "same_league_max": max(Counter(row.get("league_id") for row in items).values(), default=0),
             "same_club_max": max(Counter(row.get("club_id") for row in items).values(), default=0),
             "quality_counts": dict(Counter(row.get("quality") for row in items)),
-            "chemistry": chemistry_score(items),
+            "chemistry": chemistry["total"],
+            "player_chemistry": chemistry["per_player"],
+            "in_position": chemistry["in_position"],
         }
 
     @staticmethod
@@ -566,6 +630,15 @@ class SbcService:
                     "same_club_count": "same_club_max",
                 }[kind]
             ]
+        if kind == "all_players_chemistry_points":
+            values = metrics["player_chemistry"]
+            if constraint["operator"] == "min":
+                return min(values, default=0)
+            if constraint["operator"] == "max":
+                return max(values, default=0)
+            return constraint["value"] if all(
+                value == constraint["value"] for value in values
+            ) else -1
         return metrics[kind]
 
     @staticmethod
@@ -670,7 +743,9 @@ class SbcService:
                 int(position["slot_index"]): position for position in slot_positions
             }
             slots = [
-                by_index.get(index, {}).get("position_name") or f"ITEM_{index + 1}"
+                by_index.get(index, {}).get("general_position_name")
+                or by_index.get(index, {}).get("position_name")
+                or f"ITEM_{index + 1}"
                 for index in slot_indices
             ]
         return {

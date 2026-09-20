@@ -331,8 +331,11 @@ class ActionDispatcher:
     def _save_sbc_squad(self, action):
         service = self._sbc_service()
         expected_sync_id = action["_expected_sync_id"]
+        self._require_expected_sync(expected_sync_id)
         validation = service.validate_solution(
-            action["solution_id"], expected_sync_id
+            action["solution_id"],
+            expected_sync_id,
+            reserved_item_ids=self._active_squad_item_ids(),
         )
         slot_indices = [
             int(value["slot_index"])
@@ -429,8 +432,11 @@ class ActionDispatcher:
     def _submit_sbc(self, action):
         service = self._sbc_service()
         expected_sync_id = action["_expected_sync_id"]
+        self._require_expected_sync(expected_sync_id)
         validation = service.validate_solution(
-            action["solution_id"], expected_sync_id
+            action["solution_id"],
+            expected_sync_id,
+            reserved_item_ids=self._active_squad_item_ids(),
         )
         slot_indices = [
             int(value["slot_index"])
@@ -562,6 +568,33 @@ class ActionDispatcher:
                 recovery="Initialize ActionDispatcher with the active catalog.",
             )
         return SbcService(self.runtime, self.catalog)
+
+    def _active_squad_item_ids(self):
+        raw = self._call("getSquads", {"detail": "detailed", "squad_id": None})
+        options = SquadService.validate_arguments(
+            {"selection": "active", "detail": "detailed", "include_options": False}
+        )
+        normalized = SquadService.normalize(raw, options)
+        return sorted(
+            {
+                int((slot.get("item") or {}).get("item_id"))
+                for squad in normalized["squads"]
+                for slot in squad.get("slots") or []
+                if slot.get("section") != "manager"
+                and (slot.get("item") or {}).get("item_id") is not None
+                and (slot.get("item") or {}).get("item_type") in (None, "player")
+            }
+        )
+
+    def _require_expected_sync(self, expected_sync_id):
+        current_sync_id = self.runtime.account_summary()["last_full_sync_id"]
+        if current_sync_id != expected_sync_id:
+            raise FC27Error(
+                "STALE_CLUB_STATE",
+                f"Expected sync {expected_sync_id}, current complete sync is {current_sync_id}.",
+                retryable=True,
+                recovery="Sync the club and rebuild the exact action.",
+            )
 
     def _call(self, method, params):
         response = self.bridge.call(method, params)

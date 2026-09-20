@@ -451,6 +451,7 @@ class FC27Daemon:
                         arguments.get("challenge_id"),
                         arguments.get("objective") or {},
                         arguments.get("max_solutions", 5),
+                        reserved_item_ids=self._active_squad_item_ids(),
                     ),
                 )
             if name == "execute_actions":
@@ -541,6 +542,29 @@ class FC27Daemon:
                 recovery="Run FC27:sync_club after login, then retry the SBC request.",
             )
         return SbcService(self.accounts.active, self.catalog)
+
+    def _active_squad_item_ids(self):
+        if not self.bridge.health()["connected"]:
+            raise FC27Error(
+                "EA_SESSION_REQUIRED",
+                "SBC solving requires a fresh active-squad read from the authenticated Web App.",
+                retryable=True,
+                recovery="Open the FC27 Web App and sign in; the extension connects automatically.",
+            )
+        options = self.squads.validate_arguments(
+            {"selection": "active", "detail": "detailed", "include_options": False}
+        )
+        raw = self._browser_tool("getSquads", {"detail": "detailed", "squad_id": None})
+        normalized = self.squads.normalize(raw, options)
+        item_ids = {
+            int((slot.get("item") or {}).get("item_id"))
+            for squad in normalized["squads"]
+            for slot in squad.get("slots") or []
+            if slot.get("section") != "manager"
+            and (slot.get("item") or {}).get("item_id") is not None
+            and (slot.get("item") or {}).get("item_type") in (None, "player")
+        }
+        return sorted(item_ids)
 
     def _envelope(self, source, data, complete=True):
         metadata = self.catalog.metadata()

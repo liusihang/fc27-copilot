@@ -36,9 +36,9 @@ The current normalized requirement keys are:
 | 10 | count of players from one specific nation |
 | 11 | count of players from one specific league |
 | 12 | count of players from one of a specific set of clubs |
-| 4 | maximum group size by nation/region, compared through scope |
-| 5 | maximum group size by league, compared through scope |
-| 6 | maximum group size by club, compared through scope |
+| 4 | largest number of players sharing one nation/region, compared through scope |
+| 5 | largest number of players sharing one league, compared through scope |
+| 6 | largest number of players sharing one club, compared through scope |
 | 35 | minimum/maximum/exact squad chemistry |
 | 36 | minimum/maximum/exact chemistry points required for every player |
 
@@ -56,11 +56,15 @@ The objective may contain:
 - `max_item_overall`: preserve higher-rated items;
 - `max_solutions`: return at most ten candidates through the tool parameter.
 
-Protected items, loan items, Tradepile items, stale/missing items, duplicates, and cards absent from the catalog are excluded or rejected. Tradeable value uses acquisition cost, then the latest local reference price when acquisition cost is unavailable.
+Protected items, loan items, Tradepile items, stale/missing items, duplicates, special cards, Evolution cards, every player in the current active squad, and cards absent from the catalog are excluded or rejected. The active squad is read fresh before solving and before save or submission. Tradeable value uses acquisition cost, then the latest local reference price when acquisition cost is unavailable.
 
 The Agent resolves named players through `FC27:club_query` and passes concrete `item_id` values. This keeps duplicate owned copies unambiguous. A required item remains subject to every normal safety and objective rule. Required/excluded overlap, required items outside an explicit candidate pool, protected or loan required items, missing current items, and mandatory value above the hard limit fail before model construction.
 
-The optimizer models the normalized quality, quality-count, team-rating, nation, league, club, specific-nation, specific-league, specific-club, same-attribute, chemistry, squad-size, mandatory-item, and tradeable-value constraints. Exact fillable slot indices and position metadata come from the loaded EA challenge squad. Formation names are descriptive and do not define write order. Chemistry uses the FC squad thresholds for clubs (2/4/7), nations (2/5/8), and leagues (3/5/8), with no manager contribution in an SBC squad. It minimizes, in order, tradeable-card use when requested, tradeable opportunity cost, rating consumption, and deterministic item identity. Accepted item sets are excluded and the model is resolved to produce additional candidates under one bounded deadline.
+The optimizer models the normalized quality, quality-count, team-rating, nation, league, club, specific-nation, specific-league, specific-club, same-attribute, chemistry, squad-size, mandatory-item, and tradeable-value constraints. Exact fillable slot indices and position metadata come from the loaded EA challenge squad. Formation names are descriptive and do not define write order.
+
+For ordinary cards, only a player assigned to a preferred or alternate position earns chemistry and contributes to club, league, and nation thresholds. Club thresholds are 2/4/7, league thresholds are 3/5/8, and nation thresholds are 2/5/8. Individual chemistry is capped at three and team chemistry is the sum of field-slot chemistry. SBC squads have no manager contribution. Special, Icon, Hero, Hall of FUT, and Evolution chemistry modifiers stay outside this standard-card solver because those cards are excluded from automatic candidates.
+
+When no chemistry or explicit position requirement exists, the optimizer does not restrict item-to-slot assignment and selects the lowest-cost eligible set under the remaining requirements. When chemistry is required, it assigns exact items to exact slots, permits zero-chemistry out-of-position fillers, and enforces only the assignment needed to reach the declared chemistry requirement. It minimizes, in order, tradeable-card use when requested, tradeable opportunity cost, rating consumption, and deterministic item identity. Accepted item sets are excluded and the model is resolved to produce additional candidates under one bounded deadline.
 
 Each result reports `optimal`, `feasible`, `infeasible`, or `unknown`. Every feasible model result passes the separate local validator before persistence. Unsupported EA requirements remain blocking; supplying a mandatory item never converts an unknown requirement into verified evidence.
 

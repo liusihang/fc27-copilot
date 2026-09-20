@@ -144,7 +144,7 @@ Reads current SBC state from the authenticated Web App, normalizes and persists 
 
 ### `FC27:sbc_solve`
 
-Optimizes and persists multiple exact-item candidates from the latest owned-item mirror with OR-Tools CP-SAT. Protected, loan, stale, duplicate, Tradepile, and explicitly excluded items are rejected. Every candidate is independently revalidated before persistence. Results distinguish `optimal`, deadline-bounded `feasible`, `infeasible`, and `unknown` solver outcomes and never save or submit.
+Reads the current active squad, then optimizes and persists multiple exact-item candidates from the latest owned-item mirror with OR-Tools CP-SAT. Protected, loan, stale, duplicate, Tradepile, special, Evolution, active-squad, and explicitly excluded items are rejected. Active-squad protection covers starters, substitutes, and reserves and is rechecked before save or submission. Every candidate is independently revalidated before persistence. Results distinguish `optimal`, deadline-bounded `feasible`, `infeasible`, and `unknown` solver outcomes and never save or submit.
 
 The Agent can require concrete owned items:
 
@@ -163,7 +163,7 @@ The Agent can require concrete owned items:
 }
 ```
 
-`required_item_ids` contains exact current club `item_id` values. When the user names a player or card, the Agent first calls `FC27:club_query`, selects the intended owned instance, and passes its `item_id`. Every returned candidate contains every required item. Required items do not bypass protection, loan, location, candidate-pool, exclusion, overall, value, stale-state, or unsupported-requirement checks.
+`required_item_ids` contains exact current club `item_id` values. When the user names a player or card, the Agent first calls `FC27:club_query`, selects the intended owned instance, and passes its `item_id`. Every returned candidate contains every required item. Required items do not bypass special/Evolution protection, active-squad protection, local protection, loan, location, candidate-pool, exclusion, overall, value, stale-state, or unsupported-requirement checks.
 
 Supported objective fields are:
 

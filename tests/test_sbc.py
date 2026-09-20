@@ -6,6 +6,7 @@ from pathlib import Path
 from fc27.errors import FC27Error
 from fc27.runtime import RuntimeManager
 from fc27.sbc import SbcService
+from fc27.sbc_optimizer import chemistry_score
 
 
 class FakeCatalog:
@@ -140,7 +141,7 @@ class SbcServiceTest(unittest.TestCase):
                      last_full_sync_id = 1, last_full_sync_at = '2026-09-18T10:00:00Z'
                    WHERE persona_id = '123'"""
             )
-            for item_id in range(1, 14):
+            for item_id in range(1, 16):
                 card_id = 1000 + item_id
                 connection.execute(
                     """INSERT INTO club_items(
@@ -159,6 +160,8 @@ class SbcServiceTest(unittest.TestCase):
                     "club_id": item_id % 3,
                     "league_id": item_id % 4,
                     "nation_id": item_id % 5,
+                    "is_special": False,
+                    "is_evolution": False,
                 }
             connection.commit()
         self.service = SbcService(self.runtime, FakeCatalog(facts))
@@ -222,7 +225,7 @@ class SbcServiceTest(unittest.TestCase):
     def test_solver_minimizes_tradeable_value(self):
         self.service.capture_challenges(challenge_payload())
         with self.runtime.connect() as connection:
-            for item_id in range(1, 14):
+            for item_id in range(1, 16):
                 connection.execute(
                     """UPDATE club_items
                        SET tradeable = 1, acquisition_cost = ?
@@ -247,6 +250,7 @@ class SbcServiceTest(unittest.TestCase):
             )
 
     def test_marquee_requirement_keys_and_chemistry_are_supported(self):
+        slots = challenge_payload()["challenges"][0]["slots"]
         for item_id in range(1, 12):
             card_id = 1000 + item_id
             self.service.catalog.facts[card_id].update(
@@ -256,6 +260,7 @@ class SbcServiceTest(unittest.TestCase):
                     "club_id": 73 if item_id == 1 else 219 if item_id == 2 else 300 + item_id,
                     "league_id": 308,
                     "nation_id": 42 if item_id <= 2 else 1,
+                    "positions": [slots[item_id - 1]],
                 }
             )
         captured = self.service.capture_challenges(
@@ -330,7 +335,7 @@ class SbcServiceTest(unittest.TestCase):
         self.assertTrue(result["solutions"][0]["validation"]["valid"])
 
     def test_solver_assigns_cards_to_formation_slots(self):
-        payload = challenge_payload()
+        payload = challenge_payload([bronze_requirement(), specific_requirement(35, [33], -1)])
         payload["challenges"][0]["formation"] = "f442"
         payload["challenges"][0]["slots"] = [
             "GK", "RB", "CB", "CB", "LB", "RM",
@@ -356,7 +361,14 @@ class SbcServiceTest(unittest.TestCase):
             "ST",
         ]
         for item_id, position in enumerate(positions, start=1):
-            self.service.catalog.facts[1000 + item_id]["positions"] = [position]
+            self.service.catalog.facts[1000 + item_id].update(
+                {
+                    "positions": [position],
+                    "club_id": 1,
+                    "league_id": 1,
+                    "nation_id": 1,
+                }
+            )
         result = self.service.solve(
             "4",
             challenge["challenge_id"],
@@ -375,6 +387,78 @@ class SbcServiceTest(unittest.TestCase):
         self.assertTrue(
             all(
                 positions_by_item[slot["item_id"]] == slot["position"]
+                for slot in solution["slots"]
+            )
+        )
+
+    def test_solver_does_not_require_positions_without_chemistry(self):
+        payload = challenge_payload()
+        payload["challenges"][0]["slots"] = [
+            "GK", "RB", "CB", "CB", "LB", "RM",
+            "CM", "CM", "LM", "ST", "ST",
+        ]
+        self.service.capture_challenges(payload)
+        for item_id in range(1, 16):
+            self.service.catalog.facts[1000 + item_id].update(
+                {"positions": ["ST"], "overall": 60}
+            )
+        result = self.service.solve("4", "16", {}, max_solutions=1)
+        self.assertEqual(result["solutions"][0]["item_ids"], list(range(1, 12)))
+
+    def test_standard_card_chemistry_uses_only_in_position_contributors(self):
+        items = [
+            {"item_id": 1, "positions": ["ST"], "club_id": 10, "league_id": 20, "nation_id": 30},
+            {"item_id": 2, "positions": ["CAM"], "club_id": 10, "league_id": 20, "nation_id": 30},
+            {"item_id": 3, "positions": ["CM"], "club_id": 99, "league_id": 20, "nation_id": 40},
+        ]
+        correct = chemistry_score(items, ["ST", "CAM", "CM"])
+        self.assertEqual(correct["per_player"], [3, 3, 1])
+        self.assertEqual(correct["total"], 7)
+
+        one_out_of_position = chemistry_score(items, ["GK", "CAM", "CM"])
+        self.assertEqual(one_out_of_position["per_player"], [0, 0, 0])
+        self.assertEqual(one_out_of_position["total"], 0)
+
+    def test_team_chemistry_allows_low_value_out_of_position_fillers(self):
+        payload = challenge_payload(
+            [bronze_requirement(), specific_requirement(35, [9], -1)]
+        )
+        slots = payload["challenges"][0]["slots"]
+        self.service.capture_challenges(payload)
+        for item_id in range(1, 16):
+            fact = self.service.catalog.facts[1000 + item_id]
+            fact.update(
+                {
+                    "positions": ["GK"],
+                    "club_id": 100 + item_id,
+                    "league_id": 200 + item_id,
+                    "nation_id": 300 + item_id,
+                }
+            )
+        for item_id, position in zip((1, 2, 3), slots[:3]):
+            self.service.catalog.facts[1000 + item_id].update(
+                {
+                    "positions": [position],
+                    "club_id": 10,
+                    "league_id": 20,
+                    "nation_id": 30,
+                }
+            )
+        result = self.service.solve(
+            "4",
+            "16",
+            {"candidate_item_ids": list(range(1, 12))},
+            max_solutions=1,
+        )
+        solution = result["solutions"][0]
+        self.assertEqual(solution["validation"]["metrics"]["chemistry"], 9)
+        positions_by_item = {
+            item_id: set(self.service.catalog.facts[1000 + item_id]["positions"])
+            for item_id in solution["item_ids"]
+        }
+        self.assertTrue(
+            any(
+                slot["position"] not in positions_by_item[slot["item_id"]]
                 for slot in solution["slots"]
             )
         )
@@ -660,6 +744,123 @@ class SbcServiceTest(unittest.TestCase):
         self.assertEqual(retained["slot_indices"], list(range(11)))
         self.assertEqual(retained["slots"], first_challenge["slots"])
         self.assertEqual(retained["slot_indices_source"], "persisted_ea_slot_contract")
+
+    def test_solver_excludes_special_evolution_and_active_squad_items(self):
+        self.service.capture_challenges(challenge_payload())
+        self.service.catalog.facts[1001]["is_special"] = True
+        self.service.catalog.facts[1002]["is_evolution"] = True
+        result = self.service.solve(
+            "4", "16", {}, max_solutions=1, reserved_item_ids=[3]
+        )
+        solution = result["solutions"][0]
+        self.assertTrue({1, 2, 3}.isdisjoint(solution["item_ids"]))
+        self.assertEqual(
+            result["candidate_pool"]["excluded_counts"],
+            {"active_squad": 1, "evolution": 1, "special": 1},
+        )
+
+    def test_required_item_reports_exact_automatic_protection_reason(self):
+        self.service.capture_challenges(challenge_payload())
+        cases = [
+            (1, "special", []),
+            (2, "evolution", []),
+            (3, "active_squad", [3]),
+        ]
+        self.service.catalog.facts[1001]["is_special"] = True
+        self.service.catalog.facts[1002]["is_evolution"] = True
+        for item_id, reason, reserved in cases:
+            with self.subTest(reason=reason):
+                with self.assertRaises(FC27Error) as context:
+                    self.service.solve(
+                        "4",
+                        "16",
+                        {"required_item_ids": [item_id]},
+                        max_solutions=1,
+                        reserved_item_ids=reserved,
+                    )
+                self.assertEqual(context.exception.code, "SBC_REQUIRED_ITEM_INELIGIBLE")
+                self.assertEqual(context.exception.details["items"][0]["reason"], reason)
+
+    def test_live_marquee_matchups_fixture_normalizes_and_solves_end_to_end(self):
+        fixture = json.loads(
+            (
+                Path(__file__).parent
+                / "fixtures"
+                / "fc27_marquee_matchups_20260920.json"
+            ).read_text(encoding="utf-8")
+        )
+        captured = self.service.capture_challenges(fixture)
+        by_id = {
+            challenge["challenge_id"]: challenge
+            for challenge in captured["challenges"]
+        }
+        self.assertEqual(
+            [constraint["type"] for constraint in by_id["39"]["constraints"]],
+            [
+                "specific_club_count",
+                "specific_league_count",
+                "same_nation_count",
+                "same_club_count",
+                "team_rating",
+                "chemistry",
+            ],
+        )
+        self.assertEqual(by_id["38"]["constraints"][2]["type"], "same_league_count")
+
+        for challenge_id in ("37", "38", "39"):
+            challenge = by_id[challenge_id]
+            for item_id, position in enumerate(challenge["slots"], start=1):
+                fact = self.service.catalog.facts[1000 + item_id]
+                fact.update(
+                    {
+                        "overall": 75,
+                        "quality": "gold",
+                        "positions": [position],
+                        "is_special": False,
+                        "is_evolution": False,
+                    }
+                )
+                if challenge_id == "37":
+                    fact.update(
+                        {
+                            "club_id": 100 + item_id,
+                            "league_id": 308,
+                            "nation_id": 38,
+                        }
+                    )
+                elif challenge_id == "38":
+                    fact.update(
+                        {
+                            "club_id": 73 if item_id <= 5 else 219 if item_id <= 10 else 500,
+                            "league_id": 1 if item_id <= 5 else 2 if item_id <= 10 else 3,
+                            "nation_id": 18 if item_id <= 10 else 40,
+                        }
+                    )
+                else:
+                    fact.update(
+                        {
+                            "club_id": [240, 243, 300, 301, 302, 303, 304, 305, 400, 401, 402][item_id - 1],
+                            "league_id": 53 if item_id <= 8 else 54,
+                            "nation_id": 1 if item_id <= 8 else 2,
+                        }
+                    )
+            result = self.service.solve(
+                "16",
+                challenge_id,
+                {"candidate_item_ids": list(range(1, 12))},
+                max_solutions=1,
+            )
+            solution = result["solutions"][0]
+            self.assertTrue(solution["validation"]["valid"])
+            chemistry_requirement = next(
+                constraint["value"]
+                for constraint in challenge["constraints"]
+                if constraint["type"] == "chemistry"
+            )
+            self.assertGreaterEqual(
+                solution["validation"]["metrics"]["chemistry"],
+                chemistry_requirement,
+            )
 
 
 if __name__ == "__main__":
