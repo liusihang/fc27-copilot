@@ -1547,6 +1547,7 @@ class SbcService:
             "quality_counts": dict(Counter(row.get("quality") for row in items)),
             "chemistry": chemistry["total"],
             "player_chemistry": chemistry["per_player"],
+            "fixed_player_chemistry": chemistry["per_fixed"],
             "in_position": chemistry["in_position"],
         }
 
@@ -1600,7 +1601,7 @@ class SbcService:
                 }[kind]
             ]
         if kind == "all_players_chemistry_points":
-            values = metrics["player_chemistry"]
+            values = [*metrics["player_chemistry"], *metrics["fixed_player_chemistry"]]
             if constraint["operator"] == "min":
                 return min(values, default=0)
             if constraint["operator"] == "max":

@@ -942,7 +942,15 @@ class SbcServiceTest(unittest.TestCase):
         without_fixed = chemistry_score(items, ["ST", "CAM"])
         with_fixed = chemistry_score(items, ["ST", "CAM"], fixed_slots=fixed)
         self.assertEqual(without_fixed["total"], 4)
-        self.assertEqual(with_fixed["total"], 6)
+        self.assertEqual(with_fixed["total"], 9)
+        self.assertEqual(with_fixed["per_fixed"], [3])
+        league_only = [
+            {**items[0], "club_id": 1, "nation_id": 1},
+            {**items[1], "club_id": 2, "nation_id": 2},
+        ]
+        league_chemistry = chemistry_score(league_only, ["ST", "CAM"], fixed_slots=fixed)
+        self.assertEqual(league_chemistry["per_fixed"], [1])
+        self.assertEqual(league_chemistry["total"], 3)
 
         payload = brick_challenge_payload(2, slot_indices=[0, 1])
         challenge = payload["challenges"][0]
@@ -951,7 +959,7 @@ class SbcServiceTest(unittest.TestCase):
         challenge["requirements"] = [
             specific_requirement(5, [3], -1),
             specific_requirement(9, [1], -1, scope=1),
-            specific_requirement(35, [6], -1),
+            specific_requirement(35, [9], -1),
         ]
         self.service.capture_challenges(payload)
         for item_id, position in ((1, "GK"), (2, "LB")):
@@ -964,7 +972,7 @@ class SbcServiceTest(unittest.TestCase):
         result = self.service.solve(
             "1", challenge["id"], {"candidate_item_ids": [1, 2]}, max_solutions=1
         )
-        self.assertEqual(result["solutions"][0]["validation"]["metrics"]["chemistry"], 6)
+        self.assertEqual(result["solutions"][0]["validation"]["metrics"]["chemistry"], 9)
         self.assertTrue(result["solutions"][0]["validation"]["valid"])
 
     def test_solution_persists_real_noncontiguous_fillable_slot_indices(self):

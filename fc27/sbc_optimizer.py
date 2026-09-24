@@ -45,9 +45,17 @@ def chemistry_score(items, slots, fixed_slots=None):
             count = counts_by_attribute[attribute].get(value, 0)
             points += sum(count >= threshold for threshold in thresholds)
         per_player.append(min(3, points))
+    per_fixed = []
+    for row in fixed_slots or []:
+        points = sum(
+            sum(counts_by_attribute[attribute].get(row[attribute], 0) >= threshold for threshold in thresholds)
+            for attribute, thresholds in CHEMISTRY_THRESHOLDS.items()
+        )
+        per_fixed.append(min(3, points))
     return {
-        "total": sum(per_player),
+        "total": sum(per_player) + sum(per_fixed),
         "per_player": per_player,
+        "per_fixed": per_fixed,
         "in_position": in_position,
     }
 
@@ -738,6 +746,8 @@ class SbcOptimizer:
                         model.add(chemistry <= value)
                     else:
                         model.add(chemistry == value * selected[item_index])
+                for chemistry in chemistry_model["per_fixed"]:
+                    self._add_comparison(model, chemistry, constraint["operator"], value)
 
     @staticmethod
     def _add_comparison(model, expression, operator, value):
@@ -805,6 +815,8 @@ class SbcOptimizer:
         group_points = {}
         for attribute, thresholds in CHEMISTRY_THRESHOLDS.items():
             groups = self._groups(items, attribute, include_none=False)
+            for row in fixed_slots:
+                groups.setdefault(row[attribute], [])
             group_points[attribute] = {}
             for group_index, (value, item_indexes) in enumerate(groups.items()):
                 count = sum(in_position[item_index] for item_index in item_indexes)
@@ -838,7 +850,17 @@ class SbcOptimizer:
                 chemistry, [capped_points, in_position[item_index]]
             )
             per_item.append(chemistry)
-        return {"total": sum(per_item), "per_item": per_item}
+        per_fixed = []
+        for index, row in enumerate(fixed_slots):
+            raw_points = model.new_int_var(0, 9, f"chemistry_fixed_raw_{index}")
+            model.add(raw_points == sum(
+                group_points[attribute][row[attribute]]
+                for attribute in CHEMISTRY_THRESHOLDS
+            ))
+            chemistry = model.new_int_var(0, 3, f"chemistry_fixed_{index}")
+            model.add_min_equality(chemistry, [raw_points, 3])
+            per_fixed.append(chemistry)
+        return {"total": sum(per_item) + sum(per_fixed), "per_item": per_item, "per_fixed": per_fixed}
 
     def _distinct_count(self, model, selected, items, attribute, slot_count, index, fixed_slots):
         used = []
