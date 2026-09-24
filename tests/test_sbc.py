@@ -915,6 +915,58 @@ class SbcServiceTest(unittest.TestCase):
         self.assertEqual(normalized["slot_indices"], [2, 3, 7, 8])
         self.assertEqual(normalized["slots"], ["CB", "CB", "CM", "LW"])
 
+    def test_custom_brick_excludes_fixed_player_from_owned_slots(self):
+        payload = brick_challenge_payload(
+            10, maximum=84, slot_indices=[0, 1, 2, 3, 4, 5, 6, 7, 9, 10]
+        )
+        challenge = payload["challenges"][0]
+        challenge["challenge_type"] = "CUSTOM_BRICK_CHALLENGE"
+        challenge["fixed_slots"] = [
+            {"slot_index": 8, "club_id": 1, "league_id": 53, "nation_id": 108}
+        ]
+        captured = self.service.capture_challenges(payload)
+        normalized = self.runtime.get_sbc_challenge(challenge["id"])
+        self.assertEqual(normalized["player_count"], 10)
+        self.assertEqual(normalized["fixed_slots"], challenge["fixed_slots"])
+        self.assertEqual(normalized["slot_indices"], [0, 1, 2, 3, 4, 5, 6, 7, 9, 10])
+        result = self.service.solve("1", challenge["id"], {}, max_solutions=1)
+        self.assertEqual(len(result["solutions"][0]["slots"]), 10)
+        self.assertNotIn(8, [row["slot_index"] for row in result["solutions"][0]["slots"]])
+
+    def test_custom_brick_counts_fixed_club_and_chemistry_links(self):
+        items = [
+            {"item_id": 1, "positions": ["ST"], "club_id": 243, "league_id": 53, "nation_id": 108},
+            {"item_id": 2, "positions": ["CAM"], "club_id": 243, "league_id": 53, "nation_id": 108},
+        ]
+        fixed = [{"slot_index": 8, "club_id": 243, "league_id": 53, "nation_id": 108}]
+        without_fixed = chemistry_score(items, ["ST", "CAM"])
+        with_fixed = chemistry_score(items, ["ST", "CAM"], fixed_slots=fixed)
+        self.assertEqual(without_fixed["total"], 4)
+        self.assertEqual(with_fixed["total"], 6)
+
+        payload = brick_challenge_payload(2, slot_indices=[0, 1])
+        challenge = payload["challenges"][0]
+        challenge["challenge_type"] = "CUSTOM_BRICK_CHALLENGE"
+        challenge["fixed_slots"] = fixed
+        challenge["requirements"] = [
+            specific_requirement(5, [3], -1),
+            specific_requirement(9, [1], -1, scope=1),
+            specific_requirement(35, [6], -1),
+        ]
+        self.service.capture_challenges(payload)
+        for item_id, position in ((1, "GK"), (2, "LB")):
+            self.service.catalog.facts[1000 + item_id].update({
+                "positions": [position],
+                "club_id": 243,
+                "league_id": 53,
+                "nation_id": 108,
+            })
+        result = self.service.solve(
+            "1", challenge["id"], {"candidate_item_ids": [1, 2]}, max_solutions=1
+        )
+        self.assertEqual(result["solutions"][0]["validation"]["metrics"]["chemistry"], 6)
+        self.assertTrue(result["solutions"][0]["validation"]["valid"])
+
     def test_solution_persists_real_noncontiguous_fillable_slot_indices(self):
         payload = brick_challenge_payload(
             3, maximum=64, slot_indices=[2, 5, 8]

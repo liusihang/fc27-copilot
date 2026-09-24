@@ -639,6 +639,23 @@
     const squadPlayers = collectionValues(
       typeof squad?.getPlayers === 'function' ? squad.getPlayers() : squad?.players
     );
+    const brickIndices = typeof squad?.getAllBrickIndices === 'function'
+      ? squad.getAllBrickIndices()
+      : [
+          ...(directArray(squad, ['simpleBrickIndices', 'brickIndices']) || []),
+          ...(directArray(squad, ['customBrickIndices']) || []),
+        ];
+    const bricks = new Set(brickIndices.map(Number).filter((index) => Number.isInteger(index) && index >= 0 && index < 11));
+    const fixedSlots = (directArray(squad, ['customBrickIndices']) || []).map((index) => {
+      const slot = squadPlayers[Number(index)];
+      const item = typeof slot?.getItem === 'function' ? slot.getItem() : slot?.item;
+      return {
+        slot_index: Number(index),
+        club_id: readValue(item, ['teamId']),
+        league_id: readValue(item, ['leagueId']),
+        nation_id: readValue(item, ['nationId']),
+      };
+    });
     const directSlotPositions = squadPlayers.slice(0, 11).map((entry, fallbackIndex) => {
       const normalized = plainSquadSlot(entry) || {};
       const rawPosition = readValue(entry, ['position', 'positionId'], ['getPosition']);
@@ -681,7 +698,8 @@
           .filter((entry) => (
             Number(entry.index) >= 0
             && Number(entry.index) < 11
-            && String(entry.playerType || 'DEFAULT').toUpperCase() !== 'BRICK'
+            && !['BRICK', 'CUSTOM_BRICK'].includes(String(entry.playerType || 'DEFAULT').toUpperCase())
+            && !bricks.has(Number(entry.index))
           ))
           .map((entry) => Number(entry.index))
       )].sort((left, right) => left - right);
@@ -690,25 +708,19 @@
           slot_indices: slotIndices,
           slot_indices_source: 'ea_player_requirements',
           slot_requirements: plainValue(slotRequirements, 0, new WeakSet(), 8),
+          fixed_slots: fixedSlots,
           slot_positions: slotPositions,
           slot_positions_source: slotPositionsSource,
         };
       }
     }
-    const brickIndices = directArray(squad, ['simpleBrickIndices', 'brickIndices'])
-      || directArray(detailPayload?.squad, ['simpleBrickIndices', 'brickIndices'])
-      || directArray(detailPayload, ['simpleBrickIndices', 'brickIndices']);
-    if (brickIndices) {
-      const bricks = new Set(
-        brickIndices
-          .map(Number)
-          .filter((index) => Number.isInteger(index) && index >= 0 && index < 11)
-      );
+    if (bricks.size) {
       return {
         slot_indices: Array.from({ length: 11 }, (_, index) => index)
           .filter((index) => !bricks.has(index)),
-        slot_indices_source: 'ea_simple_brick_indices',
+        slot_indices_source: 'ea_brick_indices',
         slot_requirements: null,
+        fixed_slots: fixedSlots,
         slot_positions: slotPositions,
         slot_positions_source: slotPositionsSource,
       };
@@ -717,6 +729,7 @@
       slot_indices: null,
       slot_indices_source: null,
       slot_requirements: null,
+      fixed_slots: [],
       slot_positions: slotPositions,
       slot_positions_source: slotPositionsSource,
     };
@@ -745,6 +758,7 @@
       player_count: declaredPlayerCount ?? slotMetadata.slot_indices?.length ?? null,
       slot_indices: slotMetadata.slot_indices,
       slot_indices_source: slotMetadata.slot_indices_source,
+      fixed_slots: slotMetadata.fixed_slots,
       slot_requirements: slotMetadata.slot_requirements,
       slot_positions: slotMetadata.slot_positions,
       slot_positions_source: slotMetadata.slot_positions_source,

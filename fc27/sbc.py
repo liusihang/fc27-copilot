@@ -1254,10 +1254,11 @@ class SbcService:
             failures.append(
                 {"type": "required_item_ids", "missing_item_ids": missing_required}
             )
-        metrics = self._metrics(items, challenge["slots"])
+        fixed_slots = challenge.get("fixed_slots") or []
+        metrics = self._metrics(items, challenge["slots"], fixed_slots)
         constraint_results = []
         for constraint in challenge["constraints"]:
-            actual = self._constraint_actual(constraint, items, metrics)
+            actual = self._constraint_actual(constraint, items, metrics, fixed_slots)
             passed = self._compare(
                 actual, constraint["operator"], constraint["value"]
             )
@@ -1523,24 +1524,26 @@ class SbcService:
         return [row for row in items if row.get("quality") == exact[0]]
 
     @staticmethod
-    def _metrics(items, slots):
+    def _metrics(items, slots, fixed_slots=None):
+        fixed_slots = fixed_slots or []
+        linked = [*items, *fixed_slots]
         ratings = sorted(
             (int(row["overall"]) for row in items), reverse=True
         )
         average = sum(ratings) / len(ratings) if ratings else 0
         adjusted = sum(ratings) + sum(max(rating - average, 0) for rating in ratings)
-        chemistry = chemistry_score(items, slots)
+        chemistry = chemistry_score(items, slots, fixed_slots=fixed_slots)
         return {
             "team_rating": math.floor(adjusted / len(ratings)) if ratings else 0,
             "rating_vector": ratings,
             "max_overall": max(ratings, default=0),
             "total_overall": sum(ratings),
-            "nation_count": len({row.get("nation_id") for row in items}),
-            "league_count": len({row.get("league_id") for row in items}),
-            "club_count": len({row.get("club_id") for row in items}),
-            "same_nation_max": max(Counter(row.get("nation_id") for row in items).values(), default=0),
-            "same_league_max": max(Counter(row.get("league_id") for row in items).values(), default=0),
-            "same_club_max": max(Counter(row.get("club_id") for row in items).values(), default=0),
+            "nation_count": len({row.get("nation_id") for row in linked}),
+            "league_count": len({row.get("league_id") for row in linked}),
+            "club_count": len({row.get("club_id") for row in linked}),
+            "same_nation_max": max(Counter(row.get("nation_id") for row in linked).values(), default=0),
+            "same_league_max": max(Counter(row.get("league_id") for row in linked).values(), default=0),
+            "same_club_max": max(Counter(row.get("club_id") for row in linked).values(), default=0),
             "quality_counts": dict(Counter(row.get("quality") for row in items)),
             "chemistry": chemistry["total"],
             "player_chemistry": chemistry["per_player"],
@@ -1548,7 +1551,7 @@ class SbcService:
         }
 
     @staticmethod
-    def _constraint_actual(constraint, items, metrics):
+    def _constraint_actual(constraint, items, metrics, fixed_slots=None):
         kind = constraint["type"]
         if kind == "squad_quality":
             levels = [QUALITY_RANKS.get(row.get("quality"), 0) for row in items]
@@ -1587,7 +1590,7 @@ class SbcService:
                 "specific_league_count": ("league_id", "league_ids"),
                 "specific_club_count": ("club_id", "club_ids"),
             }[kind]
-            return sum(row.get(attribute) in constraint[ids_key] for row in items)
+            return sum(row.get(attribute) in constraint[ids_key] for row in [*items, *(fixed_slots or [])])
         if kind in ("same_nation_count", "same_league_count", "same_club_count"):
             return metrics[
                 {
@@ -1690,6 +1693,15 @@ class SbcService:
         )
         if slot_indices_error is not None:
             unsupported.append(slot_indices_error)
+        fixed_slots = value.get("fixed_slots") or []
+        for slot in fixed_slots:
+            if (
+                not isinstance(slot, dict)
+                or slot.get("slot_index") in (slot_indices or [])
+                or any(not isinstance(slot.get(key), int) or slot[key] <= 0 for key in ("club_id", "league_id", "nation_id"))
+            ):
+                unsupported.append({"type": "fixed_slots", "reason": "EA fixed slot metadata is incomplete or overlaps a fillable slot"})
+                break
         slot_layout_error = value.get("slot_layout_error")
         if slot_layout_error is not None:
             unsupported.append(
@@ -1728,6 +1740,7 @@ class SbcService:
             "player_count_source": player_count_source,
             "slot_indices": slot_indices,
             "slot_indices_source": slot_indices_source,
+            "fixed_slots": fixed_slots,
             "slot_layout_error": slot_layout_error,
             "slot_positions": slot_positions,
             "slot_positions_source": slot_positions_source,
@@ -1997,6 +2010,7 @@ class SbcService:
         challenge["player_count_source"] = existing.get("player_count_source")
         challenge["slot_indices"] = existing.get("slot_indices")
         challenge["slot_indices_source"] = "persisted_ea_slot_contract"
+        challenge["fixed_slots"] = existing.get("fixed_slots") or []
         challenge["slot_positions"] = existing.get("slot_positions") or []
         challenge["slot_positions_source"] = existing.get("slot_positions_source")
         challenge["slots"] = existing.get("slots") or []

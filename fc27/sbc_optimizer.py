@@ -13,7 +13,7 @@ CHEMISTRY_THRESHOLDS = {
 }
 
 
-def chemistry_score(items, slots):
+def chemistry_score(items, slots, fixed_slots=None):
     if len(items) != len(slots):
         raise ValueError("Chemistry requires one assigned field slot per item.")
     in_position = []
@@ -30,6 +30,8 @@ def chemistry_score(items, slots):
             value = row.get(attribute)
             if value is not None:
                 counts[value] += 1
+        for row in fixed_slots or []:
+            counts[row[attribute]] += 1
         counts_by_attribute[attribute] = counts
 
     per_player = []
@@ -100,7 +102,7 @@ class SbcOptimizer:
                 model, selected, items, challenge, slot_count
             )
             chemistry_model = self._build_chemistry_model(
-                model, items, in_position, slot_count
+                model, items, in_position, slot_count, challenge.get("fixed_slots") or []
             )
 
         indexes_by_item_id = {
@@ -596,6 +598,7 @@ class SbcOptimizer:
         slot_count,
         chemistry_model,
     ):
+        fixed_slots = challenge.get("fixed_slots") or []
         for index, constraint in enumerate(challenge["constraints"]):
             kind = constraint["type"]
             if kind == "squad_quality":
@@ -669,7 +672,7 @@ class SbcOptimizer:
                     "club_count": "club_id",
                 }[kind]
                 distinct = self._distinct_count(
-                    model, selected, items, attribute, slot_count, index
+                    model, selected, items, attribute, slot_count, index, fixed_slots
                 )
                 self._add_comparison(
                     model, distinct, constraint["operator"], int(constraint["value"])
@@ -697,7 +700,7 @@ class SbcOptimizer:
                     selected[item_index]
                     for item_index, row in enumerate(items)
                     if row.get(attribute) in values
-                )
+                ) + sum(row.get(attribute) in values for row in fixed_slots)
                 self._add_comparison(
                     model, matching, constraint["operator"], int(constraint["value"])
                 )
@@ -712,7 +715,7 @@ class SbcOptimizer:
                     "same_club_count": "club_id",
                 }[kind]
                 maximum = self._maximum_attribute_count(
-                    model, selected, items, attribute, slot_count, index
+                    model, selected, items, attribute, slot_count, index, fixed_slots
                 )
                 self._add_comparison(
                     model, maximum, constraint["operator"], int(constraint["value"])
@@ -798,13 +801,14 @@ class SbcOptimizer:
             groups[key].append(index)
         return groups
 
-    def _build_chemistry_model(self, model, items, in_position, slot_count):
+    def _build_chemistry_model(self, model, items, in_position, slot_count, fixed_slots):
         group_points = {}
         for attribute, thresholds in CHEMISTRY_THRESHOLDS.items():
             groups = self._groups(items, attribute, include_none=False)
             group_points[attribute] = {}
             for group_index, (value, item_indexes) in enumerate(groups.items()):
                 count = sum(in_position[item_index] for item_index in item_indexes)
+                count += sum(row.get(attribute) == value for row in fixed_slots)
                 points = model.new_int_var(
                     0,
                     len(thresholds),
@@ -814,7 +818,7 @@ class SbcOptimizer:
                     [count, points],
                     [
                         (size, sum(size >= threshold for threshold in thresholds))
-                        for size in range(slot_count + 1)
+                        for size in range(slot_count + len(fixed_slots) + 1)
                     ],
                 )
                 group_points[attribute][value] = points
@@ -836,29 +840,35 @@ class SbcOptimizer:
             per_item.append(chemistry)
         return {"total": sum(per_item), "per_item": per_item}
 
-    def _distinct_count(self, model, selected, items, attribute, slot_count, index):
+    def _distinct_count(self, model, selected, items, attribute, slot_count, index, fixed_slots):
         used = []
-        for group_index, item_indexes in enumerate(
-            self._groups(items, attribute).values()
-        ):
+        groups = self._groups(items, attribute)
+        for row in fixed_slots:
+            groups.setdefault(row.get(attribute), [])
+        for group_index, (value, item_indexes) in enumerate(groups.items()):
             count = sum(selected[item_index] for item_index in item_indexes)
+            count += sum(row.get(attribute) == value for row in fixed_slots)
             present = model.new_bool_var(
                 f"constraint_{index}_{attribute}_present_{group_index}"
             )
             model.add(count >= present)
-            model.add(count <= slot_count * present)
+            model.add(count <= (slot_count + len(fixed_slots)) * present)
             used.append(present)
         return sum(used)
 
     def _maximum_attribute_count(
-        self, model, selected, items, attribute, slot_count, index
+        self, model, selected, items, attribute, slot_count, index, fixed_slots
     ):
+        groups = self._groups(items, attribute)
+        for row in fixed_slots:
+            groups.setdefault(row.get(attribute), [])
         counts = [
             sum(selected[item_index] for item_index in item_indexes)
-            for item_indexes in self._groups(items, attribute).values()
+            + sum(row.get(attribute) == value for row in fixed_slots)
+            for value, item_indexes in groups.items()
         ]
         maximum = model.new_int_var(
-            0, slot_count, f"constraint_{index}_{attribute}_maximum"
+            0, slot_count + len(fixed_slots), f"constraint_{index}_{attribute}_maximum"
         )
         model.add_max_equality(maximum, counts)
         return maximum

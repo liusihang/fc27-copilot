@@ -1683,6 +1683,7 @@ class RuntimeDB:
                                 "player_count_source": value.get("player_count_source"),
                                 "slot_indices": value.get("slot_indices"),
                                 "slot_indices_source": value.get("slot_indices_source"),
+                                "fixed_slots": value.get("fixed_slots") or [],
                                 "slot_layout_error": value.get("slot_layout_error"),
                                 "slot_positions": value.get("slot_positions"),
                                 "slot_positions_source": value.get("slot_positions_source"),
