@@ -725,6 +725,25 @@
         slot_positions_source: slotPositionsSource,
       };
     }
+    const nonBrickSlots = typeof squad?.getNonBrickSlots === 'function'
+      ? collectionValues(squad.getNonBrickSlots(true))
+      : [];
+    const nonBrickIndices = nonBrickSlots.map((slot) =>
+      Number(readValue(slot, ['index', 'slotIndex'], ['getIndex']))
+    ).filter((index) => Number.isInteger(index) && index >= 0 && index < 11);
+    if (
+      nonBrickIndices.length === 11
+      && new Set(nonBrickIndices).size === 11
+    ) {
+      return {
+        slot_indices: nonBrickIndices.sort((left, right) => left - right),
+        slot_indices_source: 'ea_non_brick_slots',
+        slot_requirements: null,
+        fixed_slots: [],
+        slot_positions: slotPositions,
+        slot_positions_source: slotPositionsSource,
+      };
+    }
     return {
       slot_indices: null,
       slot_indices_source: null,
