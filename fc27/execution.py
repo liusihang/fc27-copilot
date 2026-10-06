@@ -47,11 +47,11 @@ class ExecutionService:
                 "Account actions are disabled while policy mode is observe.",
                 recovery="Review policy values and explicitly change execution_mode before retrying.",
             )
-        if policy["execution_mode"] == "suggest" and request.get("confirmed") is not True:
+        if request.get("confirmed") is not True:
             raise FC27Error(
                 "CONFIRMATION_REQUIRED",
-                "Suggest mode requires confirmed=true for this exact batch.",
-                recovery="Review the exact action list, then retry the same batch with confirmed=true.",
+                "Every new account-write batch requires confirmed=true after explicit user approval.",
+                recovery="Show the exact actions and irreversible effects, ask the user, and proceed only after explicit approval.",
             )
 
         self._validate_batch(request, normalized_actions, policy)

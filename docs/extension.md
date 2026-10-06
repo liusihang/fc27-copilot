@@ -9,12 +9,12 @@ npm run validate:extension
 npm run build:extension
 ```
 
-Load `/absolute/path/Documents/fc27-copilot/dist` as an unpacked extension from `chrome://extensions`.
+Load this project's `dist` directory as an unpacked extension from `chrome://extensions` or `edge://extensions`. See the [generic installation guide](install.md).
 
 ## Connection flow
 
-1. Keep `fc27d` installed as the macOS LaunchAgent or start `python3 fc27d.py`.
-2. Load `/absolute/path/Documents/fc27-copilot/dist` as an unpacked extension once.
+1. Keep `fc27d` installed as the macOS LaunchAgent or start it with the project virtual-environment Python.
+2. Load this project's `dist` directory as an unpacked extension once.
 3. Open the FC27 Ultimate Team Web App and sign in.
 
 The Web App content script drives one bounded localhost long poll at a time, so Manifest V3 may suspend and resume the service worker without losing the bridge. The default FC27 server is `http://127.0.0.1:3926`. The popup exposes one optional loopback-address field when a different local port is required.
@@ -40,7 +40,7 @@ The extension owns:
 - public connection/session status.
 - direct localhost polling and public change-event delivery.
 
-`fc27d` owns rate limits, policy, persistence, idempotency, synchronization, readback, and MCP. OpenClaw owns strategy decisions.
+`fc27d` owns rate limits, policy, persistence, idempotency, synchronization, readback, and MCP. The MCP client Agent owns strategy decisions and must ask the user before every new account-write batch.
 
 ## Current acceptance boundary
 

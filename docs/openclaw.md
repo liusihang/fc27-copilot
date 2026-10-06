@@ -1,39 +1,26 @@
 # OpenClaw integration
 
-Verified locally on 2026-09-19 with OpenClaw `2026.9.4 (3a9d69d)`.
+Complete the [generic installation](install.md) first. The registration command below was originally accepted with OpenClaw `2026.9.4`; check your installed CLI help if its options differ.
 
-## fc27d service
+## Register the stdio server
 
-Install or refresh the macOS LaunchAgent:
-
-```bash
-.venv/bin/python scripts/install_macos_service.py --proxy http://127.0.0.1:7897
-```
-
-Running the installer through `.venv/bin/python` records the project environment in the LaunchAgent so the daemon can load the pinned OR-Tools dependency.
-
-Installed service:
-
-- label: `io.github.liusihang.fc27d`;
-- plist: `~/Library/LaunchAgents/io.github.liusihang.fc27d.plist`;
-- bind: `127.0.0.1:3926`;
-- log: `~/Library/Logs/fc27d.log`.
-
-## MCP registration
-
-OpenClaw manages this server under `mcp.servers.FC27`:
+Run from the FC27 Copilot project directory on macOS or Linux:
 
 ```bash
 openclaw mcp add FC27 \
-  --command /path/to/installation/opt/python@3.14/bin/python3.14 \
-  --arg /absolute/path/Documents/fc27-copilot/mcp_stdio.py \
-  --cwd /absolute/path/Documents/fc27-copilot \
+  --command "$PWD/.venv/bin/python" \
+  --arg "$PWD/mcp_stdio.py" \
+  --cwd "$PWD" \
   --connect-timeout 5 \
-  --timeout 65 \
+  --timeout 240 \
   --approval prompt
 ```
 
-Validation commands:
+Windows users configure the same absolute script path with the project `.venv\Scripts\python.exe` interpreter through their client's supported configuration interface.
+
+The daemon must already be running. Keep approval prompts enabled. The server requires the Agent to ask for explicit approval of each exact new account-write batch; approving a broad task or allowing the MCP server does not approve future writes.
+
+Validation:
 
 ```bash
 openclaw config validate
@@ -41,31 +28,37 @@ openclaw mcp status
 openclaw mcp probe FC27
 ```
 
-## Accepted result
+The probe should discover 12 tools. Use `status` and `catalog_query` for the first read-only checks, then inspect `club_query` after logging in to the Web App. Tool prefixes are assigned by the client; the server publishes unprefixed names such as `catalog_query`.
 
-- OpenClaw discovers 12 FC27 tools, including `content_query`, `squad_query`, `sbc_query`, and `sbc_refresh`.
-- `fc27d` survived a forced LaunchAgent restart and returned 19,676 cards afterward.
-- The existing `fc-expert` Agent called `fc27__catalog_query` successfully.
-- Query `card_ea_id=231747` returned Kylian Mbappé, overall 91, primary position ST.
-- OpenClaw provider/model configuration and unrelated agent configuration were byte-for-byte equivalent after removing the newly added `mcp` object from comparison.
+## Optional macOS service
 
-## Rollback
+From the project directory:
 
-Remove the MCP registration:
+```bash
+.venv/bin/python scripts/install_macos_service.py
+```
+
+The installer uses the current project directory and interpreter. Its application label is `io.github.liusihang.fc27d`, a project namespace, not a local user account. It listens on `127.0.0.1:3926` and writes its log to `~/Library/Logs/fc27d.log`.
+
+A proxy is optional; use your own loopback proxy URL only when needed:
+
+```bash
+.venv/bin/python scripts/install_macos_service.py --proxy http://127.0.0.1:7897
+```
+
+Do not run a manual daemon and the LaunchAgent on the same port simultaneously.
+
+## Remove the registration or stop the service
 
 ```bash
 openclaw mcp unset FC27
 openclaw mcp reload
 ```
 
-Stop and unload the daemon:
+Stopping the macOS service does not delete its database:
 
 ```bash
-launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/io.github.liusihang.fc27d.plist
+launchctl bootout "gui/$(id -u)" "$HOME/Library/LaunchAgents/io.github.liusihang.fc27d.plist"
 ```
 
-The pre-registration OpenClaw rollback file created during acceptance is:
-
-```text
-/absolute/path/.openclaw/backups/openclaw-pre-fc27-mcp-20260918T181851.json
-```
+Existing dated acceptance reports describe earlier environments and policies; they are not installation prerequisites or evidence of your account's current state.

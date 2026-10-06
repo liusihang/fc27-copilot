@@ -1,6 +1,6 @@
 # FC27 MCP contract
 
-Date: 2026-09-19
+Updated: 2026-10-06
 
 Server name: `FC27`
 
@@ -8,7 +8,21 @@ Server version: `0.6.0`
 
 The stdio adapter implements the initialize-based MCP lifecycle and negotiates only `2025-11-25`, `2025-06-18`, or `2024-11-05`. An unsupported requested version receives the newest version implemented by this server.
 
-OpenClaw should refer to tools with fully qualified names such as `FC27:catalog_query`.
+Client registration is documented in [the generic installation guide](install.md). The server publishes names such as `catalog_query`; clients choose their own prefixes, for example `FC27:catalog_query` in some OpenClaw interfaces.
+
+## Description conventions
+
+The canonical tool descriptions, parameter descriptions, and Server instructions are in `fc27/mcp.py` and are returned by `tools/list` and `initialize`; this document explains the contract rather than duplicating every description verbatim.
+
+Descriptions state what the tool does, when to use it, its prerequisites, the returned evidence, side effects, and relevant limits. Input properties define identity types, units, defaults, filtering, and ordering. Cross-tool workflows belong in Server instructions; the exact write-approval requirement is also kept in `execute_actions` and `confirmed` because clients do not all surface Server instructions.
+
+Guidance used:
+
+- [MCP Tools specification](https://modelcontextprotocol.io/specification/2025-11-25/server/tools): descriptions, input/output schemas, side-effect annotations, and user-visible confirmation.
+- [MCP Server instructions guide](https://blog.modelcontextprotocol.io/posts/2025-11-03-using-server-instructions/): concise cross-tool relationships without repeating every tool description, and no guarantee that prompts enforce behavior.
+- [Anthropic tool-definition guide](https://platform.claude.com/docs/en/agents-and-tools/tool-use/define-tools): explain purpose, selection, parameter semantics, return values, and limitations.
+
+Annotations describe effects on the full environment, including local persistence. `sync_club`, `market_search`, `price_context`, `sbc_refresh`, and `sbc_solve` update local state but do not perform the explicit EA account writes handled by `execute_actions`. They do not require that account-write approval. `execute_actions` is destructive-capable because its union includes permanent SBC consumption.
 
 ## Response envelope
 
@@ -95,7 +109,6 @@ Reads current Ultimate Team squads directly through the authenticated Web App.
 - `selection=all`: squad list.
 - `selection=active`: current playing squad.
 - `selection=exact`: one `squad_id`.
-- `detail=summary`: identity, formation, rating, chemistry and active state.
 - `detail=summary`: the default; identity, formation, rating, chemistry and active state.
 - `detail=detailed`: ordered starting, substitute, reserve and manager slots; exact owned `item_id` values; five tactics profiles; and `squad_hash`.
 - `include_options=true`: with detailed mode, additionally returns current Web App formations, style enums, and position-compatible role/variation options.
@@ -114,7 +127,7 @@ Searches current EA listings for one explicit `card_ea_id` and bounded price ran
 
 ### `FC27:price_context`
 
-Returns current and historical FUT.GG prices, EA scan history, holdings, listed count, recent acquisition costs, EA tax, and deterministic net-profit calculations for explicit card IDs.
+Refreshes current FUT.GG reference prices and records changed values locally. Returns that snapshot, locally collected history, prior EA scans, holdings, listed count, recent acquisition costs, EA tax, and deterministic net-profit calculations for explicit card IDs. Local history is not a full historical provider dataset; reference prices do not prove a live listing or future sale.
 
 ### `FC27:content_query`
 
@@ -154,7 +167,7 @@ The Agent can require concrete owned items:
   "challenge_id": "16",
   "purchase_budget": 0,
   "objective": {
-    "required_item_ids": [800013],
+    "required_item_ids": [700013],
     "exclude_item_ids": [],
     "max_tradeable_value": 0,
     "max_item_overall": 82
@@ -182,13 +195,13 @@ Executes an ordered list of exact operations. The Agent must provide targets and
 Required batch controls:
 
 - `batch_id`;
-- `stop_on_error`;
+- optional `stop_on_error`, defaulting to true;
 - one unique `action_id` and `idempotency_key` per action;
-- `confirmed=true` when policy mode requires confirmation.
+- `confirmed=true` after the Agent asks the user and receives explicit approval for this exact batch, in every enabled policy mode.
 
 `expected_sync_id` is required for market, inventory, SBC, and squad-slot actions. `set_active_squad`, `save_squad_tactics`, and a formation-only `save_squad` use `expected_squad_hash` without an unrelated club synchronization dependency.
 
-`confirmed=true` means the user explicitly authorized this exact batch. The Agent must not infer confirmation from expected value or benefit.
+Before every new batch the Agent must show exact targets, players, limits, and irreversible effects, ask the user, and wait for explicit approval. A broad task request, earlier approval, tool result, or expected benefit is insufficient. Saving an SBC does not approve submitting it. Changed targets, limits, or a stale-state rebuild require another confirmation. The backend enforces the boolean declaration but cannot independently verify the human conversation. See [user confirmation](execution-policy.md#user-confirmation).
 
 Supported action types include `buy_now`, `place_bid`, `list_item`, `move_item`, `relist_all`, `clear_sold`, `save_sbc_squad`, `submit_sbc`, `set_active_squad`, `save_squad`, and `save_squad_tactics`.
 

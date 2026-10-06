@@ -1,12 +1,24 @@
 {
-  "execution_mode": "observe",
+  "execution_mode": "suggest",
   "minimum_coin_reserve": 0,
-  "maximum_single_purchase": 0,
-  "maximum_batch_spend": 0,
-  "maximum_daily_spend": 0,
+  "maximum_single_purchase": 700,
+  "maximum_batch_spend": 700,
+  "maximum_daily_spend": 700,
   "maximum_batch_actions": 1,
-  "maximum_same_card_owned": 1,
-  "maximum_tradepile_usage": 0,
+  "maximum_same_card_owned": 4,
+  "maximum_tradepile_usage": 20,
   "protected_item_ids": [],
-  "allowed_action_types": []
+  "allowed_action_types": [
+    "buy_now",
+    "place_bid",
+    "list_item",
+    "move_item",
+    "relist_all",
+    "clear_sold",
+    "save_sbc_squad",
+    "submit_sbc",
+    "save_squad",
+    "save_squad_tactics",
+    "set_active_squad"
+  ]
 }

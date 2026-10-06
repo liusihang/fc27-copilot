@@ -101,6 +101,36 @@ class ExecutionServiceTest(unittest.TestCase):
             service.execute(self.request(confirmed=False))
         self.assertEqual(context.exception.code, "CONFIRMATION_REQUIRED")
 
+    def test_all_enabled_modes_require_true_confirmation_before_dispatch(self):
+        for mode in ("suggest", "auto"):
+            for confirmation in (None, False, 1, "true"):
+                with self.subTest(mode=mode, confirmation=confirmation):
+                    calls = []
+                    service = self.service(policy(mode), calls.append)
+                    request = self.request(confirmed=confirmation)
+                    if confirmation is None:
+                        request.pop("confirmed")
+                    with self.assertRaises(FC27Error) as context:
+                        service.execute(request)
+                    self.assertEqual(context.exception.code, "CONFIRMATION_REQUIRED")
+                    self.assertEqual(calls, [])
+                    with self.runtime.connect() as connection:
+                        self.assertEqual(connection.execute("SELECT COUNT(*) FROM action_batches").fetchone()[0], 0)
+
+    def test_confirmation_is_not_reused_for_a_new_batch(self):
+        calls = []
+        service = self.service(policy("suggest"), lambda action: calls.append(action["action_id"]) or {"ok": True})
+        service.execute(self.request())
+        next_request = self.request(
+            batch_id="batch-2",
+            actions=[buy_action("a2", "buy-2")],
+        )
+        next_request.pop("confirmed")
+        with self.assertRaises(FC27Error) as context:
+            service.execute(next_request)
+        self.assertEqual(context.exception.code, "CONFIRMATION_REQUIRED")
+        self.assertEqual(calls, ["a1"])
+
     def test_rejects_stale_state_spend_ownership_and_protected_items(self):
         service = self.service(policy(), lambda action: {"ok": True})
         with self.assertRaises(FC27Error) as stale:

@@ -1,29 +1,37 @@
 # Execution policy and audit contract
 
-Date: 2026-09-18
+Updated: 2026-10-06. Dated acceptance sections below describe historical policies, not today's defaults.
 
 ## Authority
 
 `policy.json` is the only execution-permission surface. Agent arguments cannot raise its limits, add action types, remove protected items, or change the execution mode.
 
-The active policy is `suggest`. Every exact batch requires `confirmed=true` and remains subject to all amount, capacity, ownership, stale-state, protected-item, and idempotency checks. `auto` is disabled.
+The shipped policy is `suggest`. Every new exact account-write batch requires `confirmed=true` after the Agent asks the user and receives explicit approval. This is enforced in every enabled execution mode; setting `auto` does not bypass confirmation. Amount, capacity, ownership, stale-state, protected-item, and idempotency checks remain active.
 
-The accepted low-value limits are:
+The generic default limits are:
 
-- minimum coin reserve: 45,000;
+- minimum coin reserve: zero;
 - maximum single purchase, batch spend, and daily spend: 700 each;
 - maximum batch size: one action;
 - maximum ownership of the same card: four;
 - maximum tradepile usage: 20;
-- enabled actions: Buy Now, item move, and item listing.
+- enabled actions: Buy Now, bid, listing, item move, relist-all, clear-sold, SBC save/submit, active-squad selection, squad save, and tactics save.
 
-SBC save and submit action types are implemented but remain absent from `allowed_action_types`. Enabling either action is a separate exact-target authorization.
+These limits are adjustable local caps, not trading advice. Allowing an action type never approves a specific execution. `policy.example.json` contains the same defaults. The Agent cannot change the policy without a separate user-authorized configuration request.
+
+## User confirmation
+
+Before every new batch, the Agent must show the exact action list, named targets and owned items, price/bid ceilings or squad/tactics changes, and irreversible effects. It must ask the user and wait for an explicit reply approving that batch. A general request to complete an SBC, an earlier confirmation, a tool result, or a favorable price is not approval.
+
+SBC save and submit are separately confirmed batches. A save-only request must not consume items. A changed target, selected player, price limit, tactics change, or rebuilt stale-state batch requires another confirmation. Ordinary reads, local persistence, automatic synchronization, and SBC planning do not require account-write confirmation.
+
+`confirmed=true` is the caller's declaration, not independently verified human consent. The backend rejects missing, false, or non-boolean confirmation before audit or EA dispatch. A malicious or noncompliant caller can still declare true; this self-hosted contract requires a cooperating Agent and a client with visible write approval. Configure the host to ask for `execute_actions` and make these rules available to the Agent when it does not surface MCP Server instructions.
 
 ## Modes
 
 - `observe`: reject every action with `EXECUTION_DISABLED`.
 - `suggest`: require `confirmed=true` for the exact batch after all other input fields are fixed.
-- `auto`: execute only actions that pass every policy and stale-state check.
+- `auto`: also requires exact user confirmation and all policy/state checks; it is not an unattended mode.
 
 Changing `policy.json` is a separate user-authorized configuration change. Implementing an action handler does not change the active mode.
 
@@ -34,7 +42,7 @@ Every `FC27:execute_actions` request contains:
 - one non-empty `batch_id`;
 - an ordered non-empty `actions` array;
 - one unique `action_id` and `idempotency_key` per action;
-- `confirmed=true` when mode is `suggest`.
+- `confirmed=true` after explicit approval, in every enabled mode.
 
 The latest complete `expected_sync_id` is required when a batch depends on market, inventory, SBC, or squad-slot state. Active-squad selection, tactics-only changes, and formation-only squad saves use `expected_squad_hash` without requiring a club synchronization ID.
 
@@ -45,7 +53,7 @@ The Agent supplies exact targets and prices. The execution tool never selects a 
 1. Validate batch and action shapes.
 2. Return an existing result for an identical `batch_id` replay.
 3. Load and validate the complete policy file.
-4. Enforce mode and suggest-mode confirmation.
+4. Reject observe mode and require confirmation for every new write batch.
 5. For actions that depend on owned-item state, compare `expected_sync_id` with the latest complete club state.
 6. Enforce action count, allowed types, protected items, single/batch/daily spend, minimum coin reserve, same-card ownership, and tradepile usage.
 7. Reject action IDs or idempotency keys already owned by another batch.
@@ -80,6 +88,6 @@ Reusing a batch ID with different actions, or reusing an action ID or idempotenc
 
 ## Issue #19 acceptance
 
-The user approved the bounded `suggest` policy above. On 2026-09-18, a 700-coin Buy Now, move to Tradepile, and 650/700 listing completed on the authenticated PC Persona. Complete synchronization proved the coin delta, acquired item ID, destination, active trade ID, and exact prices. Replaying the purchase and listing batches returned their stored results without dispatching another EA action.
+The user approved a historical bounded `suggest` policy with a 45,000-coin reserve and only Buy Now, move, and listing enabled. On 2026-09-18, a 700-coin Buy Now, move to Tradepile, and 650/700 listing completed on the authenticated PC Persona. Complete synchronization proved the coin delta, acquired item ID, destination, active trade ID, and exact prices. Replaying the purchase and listing batches returned their stored results without dispatching another EA action.
 
 Detailed evidence is recorded in `docs/live-execution-acceptance-2026-09-18.md`. This acceptance keeps `auto` disabled.

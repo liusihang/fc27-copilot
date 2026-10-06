@@ -1,6 +1,6 @@
 # SBC capture, solving, and execution contract
 
-Date: 2026-09-20
+Updated: 2026-10-06
 
 ## Agent and tool boundary
 
@@ -8,7 +8,7 @@ Date: 2026-09-20
 
 Normal SBC responses omit raw EA evidence. `include_raw=true` is reserved for unsupported-requirement diagnosis and contract development.
 
-The active policy does not enable `save_sbc_squad` or `submit_sbc`.
+The shipped `suggest` policy enables `save_sbc_squad` and `submit_sbc`, but every new batch requires the Agent to ask the user and receive explicit approval. Saving and submitting are separate approvals; enabling a type is not permission to consume players.
 
 ## Captured requirement encoding
 
@@ -93,7 +93,7 @@ The daemon does not expose a generic browser-method RPC. Browser write methods a
 
 All save-call timeout sources (`BRIDGE_TIMEOUT`, `PAGE_BRIDGE_TIMEOUT`, and `EA_SERVICE_TIMEOUT`) are normalized to `SBC_SAVE_OUTCOME_UNKNOWN`. That state permits only fresh read-only reconciliation. Public full synchronization and account execution share the same lock, and submit dispatch revalidates the batch's original `expected_sync_id` immediately before contacting EA.
 
-`submit_sbc` remains disabled in the active policy while Issue #23 completes live acceptance. The implementation includes outcome-unknown handling, duplicate-submit rejection, and read-only challenge/inventory reconciliation. Live submission still requires separate approval for permanent item consumption.
+The implementation includes outcome-unknown handling, duplicate-submit rejection, and read-only challenge/inventory reconciliation. Live submission requires separate approval for permanent item consumption, even when saving was already approved.
 
 If the browser bridge times out after EA has already accepted the save, the action is recorded as failed and is not retried. Reconciliation accepts only the original `action_id`; the daemon derives the target from the failed audit row and performs its own fresh EA read. It requires the original batch sync to remain current, the solution to remain `validated`, and the set, challenge, persisted item order, fillable slot indices, freshness markers, and positive eligibility evidence to match. The action does not submit.
 

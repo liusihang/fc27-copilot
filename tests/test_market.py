@@ -1,6 +1,8 @@
 import tempfile
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
+from unittest.mock import patch
 
 from fc27.errors import FC27Error
 from fc27.market import FutggPriceClient, MarketService, utc_now
@@ -105,6 +107,9 @@ def snapshot(ps5_price, pc_price, observed_at):
 
 class MarketServiceTest(unittest.TestCase):
     def setUp(self):
+        clock = patch("fc27.market.datetime")
+        clock.start().now.return_value = datetime(2026, 9, 18, 12, 4, tzinfo=timezone.utc)
+        self.addCleanup(clock.stop)
         self.directory = tempfile.TemporaryDirectory()
         manager = RuntimeManager(Path(self.directory.name) / "accounts")
         manager.activate({"persona_id": "123", "platform": "pc", "club_name": "Club"})
@@ -164,6 +169,17 @@ class MarketServiceTest(unittest.TestCase):
         third = service.price_context([100], 72)
         self.assertEqual(third["persisted_changes"], {"inserted": 1, "unchanged": 1})
         self.assertEqual(len(third["cards"][0]["history"]), 3)
+
+    def test_history_excludes_observations_outside_the_requested_window(self):
+        self.runtime.record_reference_prices(snapshot(900, 1100, "2026-09-14T12:00:00.000Z")["prices"])
+        service = MarketService(
+            self.runtime,
+            FakePriceClient([snapshot(1000, 1200, "2026-09-18T12:00:00.000Z")]),
+        )
+        result = service.price_context([100], 72)
+        history = result["cards"][0]["history"]
+        self.assertEqual(len(history), 2)
+        self.assertEqual({row["price"] for row in history}, {1000, 1200})
 
     def test_market_scan_returns_trade_ids_and_persists_only_aggregates(self):
         service = MarketService(self.runtime, FakePriceClient([]))

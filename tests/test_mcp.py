@@ -4,9 +4,11 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from fc27.actions import ActionDispatcher
 from fc27.daemon import FC27Daemon
 from fc27.errors import FC27Error
-from fc27.mcp import SUPPORTED_PROTOCOL_VERSIONS, TOOLS
+from fc27.mcp import SERVER_INSTRUCTIONS, SUPPORTED_PROTOCOL_VERSIONS, TOOLS
+from fc27.policy import ACTION_TYPES, PolicyStore
 from fc27.schema import CATALOG_SCHEMA
 
 
@@ -329,9 +331,38 @@ class MCPTest(unittest.TestCase):
         by_name = {tool["name"]: tool for tool in TOOLS}
         self.assertFalse(by_name["sync_club"]["annotations"]["readOnlyHint"])
         self.assertFalse(by_name["market_search"]["annotations"]["readOnlyHint"])
+        self.assertFalse(by_name["price_context"]["annotations"]["readOnlyHint"])
         self.assertFalse(by_name["sbc_refresh"]["annotations"]["readOnlyHint"])
         self.assertFalse(by_name["sbc_solve"]["annotations"]["readOnlyHint"])
         self.assertTrue(by_name["sbc_query"]["annotations"]["readOnlyHint"])
+
+    def test_write_contract_requires_exact_user_approval(self):
+        execute = next(value for value in TOOLS if value["name"] == "execute_actions")
+        schema = execute["inputSchema"]
+        self.assertIn("confirmed", schema["required"])
+        self.assertIs(schema["properties"]["confirmed"]["const"], True)
+        self.assertIn("ask the user", execute["description"])
+        self.assertIn("irreversible", schema["properties"]["confirmed"]["description"])
+        self.assertIn("separate approvals", SERVER_INSTRUCTIONS)
+        self.assertIn("EVERY new execute_actions batch", SERVER_INSTRUCTIONS)
+
+    def test_descriptions_distinguish_cache_plans_and_account_writes(self):
+        by_name = {value["name"]: value for value in TOOLS}
+        self.assertIn("cache read", by_name["club_query"]["description"])
+        self.assertIn("Does not contact EA", by_name["sbc_query"]["description"])
+        self.assertIn("locally collected history", by_name["price_context"]["description"])
+        self.assertIn("never buys, saves, or submits", by_name["sbc_solve"]["description"])
+        self.assertIn("reserve", by_name["sbc_solve"]["description"])
+
+    def test_shipped_policy_enables_only_confirmed_implemented_writes(self):
+        root = Path(__file__).resolve().parents[1]
+        shipped = PolicyStore(root / "policy.json").load()
+        example = PolicyStore(root / "policy.example.json").load()
+        self.assertEqual(shipped, example)
+        self.assertEqual(shipped["execution_mode"], "suggest")
+        self.assertEqual(set(shipped["allowed_action_types"]), set(ACTION_TYPES))
+        for action_type in shipped["allowed_action_types"]:
+            self.assertTrue(callable(getattr(ActionDispatcher, f"_{action_type}", None)))
 
     def test_initialize_negotiates_only_supported_protocol_versions(self):
         accepted = self.daemon.mcp.handle(

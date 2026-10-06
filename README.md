@@ -1,91 +1,68 @@
 # FC27 Copilot
 
-本项目把 FC27 Web App 会话桥接、FUT.GG 球员目录与价格数据、本地俱乐部镜像和 OpenClaw MCP 整合为一个本地系统。
+一个自行部署在本机的 FC27 Ultimate Team MCP：连接浏览器中的 EA Web App，维护本地球员目录和俱乐部库存，向 Agent 提供查询、SBC 规划和明确的账户操作。
 
-当前状态：M1–M6 已完成并通过真实账户验收。扩展安装后会直接连接本机 `fc27d`；打开并登录 FC27 Web App 后自动同步俱乐部。Season、任务和进化通过 `content_query` 查询；SBC 通过 `sbc_refresh` 刷新并由 `sbc_query` 读取本地缓存。系统仍运行在逐批确认的 `suggest` 模式，`auto` 模式关闭。
+Agent 负责策略和方案选择，MCP 负责事实、状态、计算、校验及执行。无需上传 EA 密码；在官方 Web App 中自行登录。默认连接地址为 `http://127.0.0.1:3926`。
 
-## 设计边界
+## 功能
 
-- OpenClaw Agent 读取事实、比较候选并作出策略判断。
-- MCP 提供查询、确定性计算、状态同步、校验和明确操作接口。
-- `fc27d` 是运行时数据库的唯一写入者。
-- Chrome 扩展只捕获当前 Web App 会话并调用 EA 页面能力。
-- 原始 SID 和 phishing token 只保留在页面内存中。
-- `policy.json` 是唯一执行授权面；当前 `suggest` 模式要求每批操作携带 `confirmed=true`。
-- 扩展默认连接 `http://127.0.0.1:3926`，只在需要修改本机端口时设置一次 FC27 server 地址。
-- 登录、切换会话和成功的俱乐部物品写操作会触发有界、去重的完整俱乐部同步。
+- 查询本地球员卡目录，以及俱乐部、SBC 仓库、未分配物品和转会列表中的具体球员副本。
+- 登录或成功操作后自动同步俱乐部；库存未变化时保留原状态版本。
+- 查询通行证、FC Objectives、Foundations、Milestones、Mastery、Seasonal、FC Pro 和进化内容及账号进度。
+- 查询球队阵型、球员槽位、战术和网页实际支持的配置选项。
+- 获取 FUT.GG 参考价格和 EA 当前挂牌信息，返回历史观察、持有成本及税后计算。
+- 求解 SBC：先比较已有球员方案，按需比较购买 1 至 N 张卡的方案，支持指定必选球员及真实开放槽位。
+- 在用户逐批确认后购买、竞价、上架、移动物品、重新上架、清理已售物品、保存或提交 SBC、修改球队及战术。
 
-## 数据库
+## 安装与连接
 
-- `catalog.sqlite`：可由 FUT.GG 重建的全量目录。
-- `data/accounts/<persona_id>/runtime.sqlite`：每个 EA Persona 独立的俱乐部、价格、SBC 和操作历史。
+按[通用安装指南](docs/install.md)完成：安装依赖、准备球员目录、启动本机服务、加载浏览器扩展，再把 `mcp_stdio.py` 注册到 MCP 客户端。
 
-## 文档
+客户端通过 **stdio** 连接，服务名为 `FC27`，当前提供 12 个工具。`/mcp` 是本机适配器的内部 JSON-RPC 入口，不作为已验证的通用 Streamable HTTP 接口提供。
 
-- [需求](requirements.md)
-- [实施计划](plan.md)
-- [领域术语](CONTEXT.md)
-- [架构](docs/architecture.md)
-- [OpenClaw 集成](docs/openclaw.md)
-- [执行策略](docs/execution-policy.md)
-- [M5 真实账户验收](docs/live-execution-acceptance-2026-09-18.md)
-- [SBC 契约](docs/sbc-contract.md)
-- [零配置与内容查询验收](docs/zero-config-content-acceptance-2026-09-19.md)
-- [SBC 只读与本地求解验收](docs/sbc-read-only-acceptance-2026-09-18.md)
-- [开源 SBC 求解器调研](docs/open-source-sbc-solvers-2026-09-19.md)
-- [FC26 十个 SBC 样本矩阵](docs/fc26-sbc-sample-matrix-2026-09-19.md)
-- [可变人数 SBC 验收](docs/sbc-variable-size-acceptance-2026-09-19.md)
-- [来源清单](docs/source-artifacts.md)
-- [交接记录](handoff.md)
+安装后，保持服务运行，打开并登录 EA Web App 即可自动连接和同步。扩展只提供一个可选设置：本机服务地址。OpenClaw 用户另见[连接示例](docs/openclaw.md)。
 
-## 项目管理
+## 写操作与确认
 
-GitHub Milestone 对应六个实施阶段。每项实现、验证和真实账户验收均通过 Issue 跟踪。账户操作受执行模式、金额、库存容量、状态版本和幂等键共同约束。
+默认策略为 `suggest`，允许已实现的账户写操作。**每个新批次执行前，Agent 必须先展示具体操作并询问用户，得到明确同意后才能调用 `execute_actions`。**
 
-## 启动本地守护进程
+- “帮我做 SBC”只允许查询和规划，不代表批准提交或购买。
+- 保存阵容和提交 SBC 分别确认；“只保存、不提交”不能消耗球员。
+- 目标、球员、价格上限或战术发生变化后，需要重新确认。
+- 本地查询、自动同步、价格记录和求解不需要账户写入确认。
+- 策略额度、球员保护、状态校验、幂等和写后回读仍然生效；发生未知写入结果时不自动重试。
 
-先创建项目私有 Python 环境并安装固定依赖：
+`policy.json` 是唯一执行策略文件，`policy.example.json` 给出相同的通用默认值。默认每批 1 个动作，单次购买、每批和每日花费上限均为 700 金币；这些是可调整的本地额度，不是交易建议。完整规则见[执行策略](docs/execution-policy.md)。
 
-```bash
-python3 -m venv .venv
-.venv/bin/python -m pip install -r requirements.txt
-```
+`confirmed=true` 是调用方对用户批准的声明，不是系统独立验证过的人类授权。选择会展示操作并请求批准的 MCP 客户端；Server instructions 和工具描述不能保证每个模型都遵守要求。
 
-网络较慢时可使用国内镜像：
+## 数据与支持范围
+
+- `data/catalog.sqlite`：本地球员目录，查询不自动更新。维护和导入方法见[数据说明](data/README.md)。
+- `data/accounts/<persona_id>/runtime.sqlite`：每个 EA Persona 独立的库存、价格观察、SBC 和操作记录。
+- 数据库、原始输入、会话凭据和运行日志不随代码分发。分享诊断资料前需要脱敏。
+- 当前真实账户验收覆盖 macOS 和 Chromium 浏览器；其他系统的安装命令不代表同等实测覆盖。
+- SBC 自动候选排除特殊卡、进化卡、租借卡、保护球员及当前出场阵容中的球员。未知条件会阻止求解，不保证支持所有 SBC。
+- 最优性仅对结果注明的候选域或局部邻域成立；FUT.GG 价格是参考值，不保证可以买到、卖出或获得收益。
+- 本项目面向本机自部署，不是公网、多用户托管服务。不要把本机端口公开到互联网。
+
+## 开发检查
 
 ```bash
-.venv/bin/python -m pip install \
-  --index-url https://mirrors.aliyun.com/pypi/simple \
-  -r requirements.txt
+npm run check
+.venv/bin/python -m unittest discover -s tests
 ```
 
-然后按 [数据目录说明](data/README.md) 构建 `data/catalog.sqlite` 并运行：
+`check` 检查 Python 语法及浏览器扩展，不会执行真实账户操作。自动测试使用本地 fixture；需要来源数据库的测试在输入缺失时会跳过。完整安装验收仍需用户自己登录 EA Web App。
 
-```bash
-.venv/bin/python fc27d.py
-```
+## 文档与许可
 
-默认监听 `http://127.0.0.1:3926`。可用端点：
+- [MCP 工具及参数契约](docs/mcp-contract.md)
+- [SBC 规划与执行契约](docs/sbc-contract.md)
+- [系统架构](docs/architecture.md)
+- [数据库设计](docs/database-schema.md)
+- [历史验收与来源清单](docs/source-artifacts.md)
+- [MIT License](LICENSE)
+- [第三方内容及使用限制](NOTICE.md)
 
-- `GET /health`：守护进程、Catalog 和浏览器桥接状态；
-- `POST /rpc`：本地内部 RPC；
-- `GET /browser/poll`、`POST /browser/respond`：Chrome 桥接长轮询；
-- `GET /`：浏览器桥接页面。
-
-守护进程和 Chrome 桥接默认使用固定地址 `127.0.0.1:3926`。
-
-## MCP stdio
-
-`mcp_stdio.py` is the MCP process launched by an MCP client. It forwards newline-delimited JSON-RPC to the running daemon:
-
-```bash
-python3 mcp_stdio.py
-```
-
-The MCP server name is `FC27` and exposes twelve tools documented in [MCP contract](docs/mcp-contract.md). Start `fc27d.py` before launching the stdio adapter.
-
-macOS 常驻服务和 OpenClaw 注册步骤见 [OpenClaw 集成](docs/openclaw.md)。
-
-## 声明
-
-这是一个非官方的个人研究和本地工具项目，与 Electronic Arts、FUT.GG 或相关第三方没有隶属或认可关系。EA Web App 接口未公开支持，接口和服务规则可能变化。项目不提供验证码、验证流程、限流或访问控制绕过能力。
+项目代码采用 MIT 许可。该许可不授予 EA、FUT.GG 或其他第三方数据、素材、商标、账户接口的使用权，也不替代上游代码许可。EA 自动化和 FUT.GG 数据访问可能受到其服务规则限制，用户应自行核实并承担账户风险。本项目非官方，不提供验证码、验证流程、限流或访问控制绕过能力。

@@ -7,3 +7,19 @@ It is not affiliated with or endorsed by Electronic Arts, FUT.GG, FUTBIN, or the
 EA Web App endpoints are undocumented and may change. Automated access may violate current service terms or trigger account restrictions. The project does not bypass captcha, verification, transfer restrictions, rate limits, or other access controls.
 
 Third-party source material remains subject to its own license and terms. Imported implementation must retain applicable notices and be reviewed before public distribution.
+
+## License scope
+
+The project's original code and documentation are licensed under the MIT License in `LICENSE`. That license does not relicense third-party source, grant rights to EA or FUT.GG databases, card artwork, player images, trademarks, or authorize access to their services. Google OR-Tools retains its own license and notices. The original input archives are listed in `docs/source-artifacts.md`; their provenance record is not permission to redistribute them.
+
+## Deployment and confirmation
+
+This is a self-hosted, single-user local integration, not a public hosted service. Account-writing features are available under policy limits, but every new write batch requires the Agent to explain the exact operation, ask the user, and receive explicit approval. `confirmed=true` declares that approval; the server does not independently prove a human approved it. Text instructions and tool annotations are not a guarantee of Agent behavior. Use a client with visible write approval and keep service ports local.
+
+## Data and diagnostics
+
+Account databases and logs are private local data and must not be bundled in releases. Published acceptance documents use redacted account names/Persona identifiers and synthetic item/trade IDs; dates, public card IDs, constraints, and measured results remain historical evidence. They do not describe the reader's account or guarantee future compatibility. Redacting the current tree does not remove information from earlier Git commits.
+
+EA's rules prohibit bots, automation, and auto-buyers; FUT.GG's linked service terms restrict automated access and copying except where expressly permitted. MIT licensing does not remove those restrictions or account risk. Verify the applicable rules and permissions before use. The project makes no guarantee of account safety, profit, complete SBC support, or global minimum market cost.
+
+Official terms: https://help.ea.com/en/articles/ea-sports-fc/fc-rules/ and https://stormstrike.gg/terms.
