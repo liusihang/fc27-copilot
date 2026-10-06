@@ -1,68 +1,150 @@
 # FC27 Copilot
 
-一个自行部署在本机的 FC27 Ultimate Team MCP：连接浏览器中的 EA Web App，维护本地球员目录和俱乐部库存，向 Agent 提供查询、SBC 规划和明确的账户操作。
+English | [简体中文](README.zh-CN.md)
 
-Agent 负责策略和方案选择，MCP 负责事实、状态、计算、校验及执行。无需上传 EA 密码；在官方 Web App 中自行登录。默认连接地址为 `http://127.0.0.1:3926`。
+A self-hosted Model Context Protocol (MCP) server for EA SPORTS FC 27 Ultimate Team. FC27 Copilot connects an authenticated Web App session to a local player catalog, club inventory, SBC planner, and user-confirmed account operations.
 
-## 功能
+The Agent selects strategies and evaluates alternatives. The MCP server supplies facts, state, calculations, validation, and explicit operations. Users sign in through the official EA Web App; raw session credentials remain in page memory.
 
-- 查询本地球员卡目录，以及俱乐部、SBC 仓库、未分配物品和转会列表中的具体球员副本。
-- 登录或成功操作后自动同步俱乐部；库存未变化时保留原状态版本。
-- 查询通行证、FC Objectives、Foundations、Milestones、Mastery、Seasonal、FC Pro 和进化内容及账号进度。
-- 查询球队阵型、球员槽位、战术和网页实际支持的配置选项。
-- 获取 FUT.GG 参考价格和 EA 当前挂牌信息，返回历史观察、持有成本及税后计算。
-- 求解 SBC：先比较已有球员方案，按需比较购买 1 至 N 张卡的方案，支持指定必选球员及真实开放槽位。
-- 在用户逐批确认后购买、竞价、上架、移动物品、重新上架、清理已售物品、保存或提交 SBC、修改球队及战术。
+## Features
 
-## 安装与连接
+- **Player and inventory queries** — Search card definitions and identify exact owned copies across the Club, SBC Storage, Unassigned items, and Transfer List.
+- **Automatic club synchronization** — Refresh inventory after login and successful account changes. Unchanged inventory retains its state version.
+- **SBC planning** — Find owned-only squads first, compare alternatives requiring one or more purchases, require specific owned players, and respect challenge-native fillable slots.
+- **Objectives and Evolutions** — Inspect Season rewards, task requirements and account progress across FC Objectives, Foundations, Milestones, Mastery, Seasonal, FC Pro, and Evolutions.
+- **Squad management** — Read formations, player slots, tactics, and supported Web App options; apply explicitly approved changes.
+- **Market analysis** — Combine FUT.GG reference prices, live EA listing samples, local observations, acquisition costs, and tax-adjusted calculations.
+- **Controlled execution** — Purchase, bid, list, move, relist, clear sold items, save or submit SBC squads, and update squads or tactics within local policy limits.
 
-按[通用安装指南](docs/install.md)完成：安装依赖、准备球员目录、启动本机服务、加载浏览器扩展，再把 `mcp_stdio.py` 注册到 MCP 客户端。
+## Getting started
 
-客户端通过 **stdio** 连接，服务名为 `FC27`，当前提供 12 个工具。`/mcp` 是本机适配器的内部 JSON-RPC 入口，不作为已验证的通用 Streamable HTTP 接口提供。
+### Requirements
 
-安装后，保持服务运行，打开并登录 EA Web App 即可自动连接和同步。扩展只提供一个可选设置：本机服务地址。OpenClaw 用户另见[连接示例](docs/openclaw.md)。
+- Python 3.10 or later.
+- Node.js 18 or later.
+- Chrome or Edge with the browser extension enabled.
+- An MCP client that supports stdio.
+- A local player catalog obtained from a source you are authorized to use.
 
-## 写操作与确认
+Live-account validation currently covers macOS and Chromium-based browsers. Commands below use a POSIX shell; Windows equivalents are provided in the [installation guide](docs/install.md).
 
-默认策略为 `suggest`，允许已实现的账户写操作。**每个新批次执行前，Agent 必须先展示具体操作并询问用户，得到明确同意后才能调用 `execute_actions`。**
+### Install and start the local service
 
-- “帮我做 SBC”只允许查询和规划，不代表批准提交或购买。
-- 保存阵容和提交 SBC 分别确认；“只保存、不提交”不能消耗球员。
-- 目标、球员、价格上限或战术发生变化后，需要重新确认。
-- 本地查询、自动同步、价格记录和求解不需要账户写入确认。
-- 策略额度、球员保护、状态校验、幂等和写后回读仍然生效；发生未知写入结果时不自动重试。
+Clone the repository, or extract a source copy you can access, then create the Python environment:
 
-`policy.json` 是唯一执行策略文件，`policy.example.json` 给出相同的通用默认值。默认每批 1 个动作，单次购买、每批和每日花费上限均为 700 金币；这些是可调整的本地额度，不是交易建议。完整规则见[执行策略](docs/execution-policy.md)。
+```bash
+git clone https://github.com/liusihang/fc27-copilot.git
+cd fc27-copilot
+python3 -m venv .venv
+.venv/bin/python -m pip install -r requirements.txt
+```
 
-`confirmed=true` 是调用方对用户批准的声明，不是系统独立验证过的人类授权。选择会展示操作并请求批准的 MCP 客户端；Server instructions 和工具描述不能保证每个模型都遵守要求。
+Import an existing compatible database as described in the [data guide](data/README.md). Where access is permitted by the data provider, the catalog can also be built from FUT.GG:
 
-## 数据与支持范围
+```bash
+.venv/bin/python scripts/refresh_catalog.py --out data/catalog.sqlite
+.venv/bin/python scripts/validate_catalog.py data/catalog.sqlite
+npm run check
+npm run build:extension
+```
 
-- `data/catalog.sqlite`：本地球员目录，查询不自动更新。维护和导入方法见[数据说明](data/README.md)。
-- `data/accounts/<persona_id>/runtime.sqlite`：每个 EA Persona 独立的库存、价格观察、SBC 和操作记录。
-- 数据库、原始输入、会话凭据和运行日志不随代码分发。分享诊断资料前需要脱敏。
-- 当前真实账户验收覆盖 macOS 和 Chromium 浏览器；其他系统的安装命令不代表同等实测覆盖。
-- SBC 自动候选排除特殊卡、进化卡、租借卡、保护球员及当前出场阵容中的球员。未知条件会阻止求解，不保证支持所有 SBC。
-- 最优性仅对结果注明的候选域或局部邻域成立；FUT.GG 价格是参考值，不保证可以买到、卖出或获得收益。
-- 本项目面向本机自部署，不是公网、多用户托管服务。不要把本机端口公开到互联网。
+Start the daemon and leave it running:
 
-## 开发检查
+```bash
+.venv/bin/python fc27d.py
+```
+
+The default address is `http://127.0.0.1:3926`. Check `/health` for service and catalog status. A macOS background-service installation is available in the [OpenClaw and service guide](docs/openclaw.md).
+
+### Connect the browser and MCP client
+
+1. Open `chrome://extensions` or `edge://extensions`, enable Developer mode, and load this project's `dist` directory as an unpacked extension.
+2. Open the [official Ultimate Team Web App](https://www.ea.com/ea-sports-fc/ultimate-team/web-app/) and sign in. The extension connects and synchronizes automatically.
+3. Register the stdio adapter with your MCP client. For clients using the `mcpServers` format, replace both placeholder paths below with your project paths:
+
+```json
+{
+  "mcpServers": {
+    "FC27": {
+      "command": "/absolute/path/fc27-copilot/.venv/bin/python",
+      "args": ["/absolute/path/fc27-copilot/mcp_stdio.py"]
+    }
+  }
+}
+```
+
+Keep the daemon running: the stdio adapter does not start it. Set the client tool timeout to at least **240 seconds** when supported, and retain approval prompts for `execute_actions`. Start with `status` and `catalog_query`, then inspect `club_query` after login.
+
+No extension ID or copied EA token is required. The extension exposes one optional setting for a different local server address. The internal `/mcp` endpoint is not advertised as a general-purpose Streamable HTTP transport.
+
+See the [installation guide](docs/install.md) for Windows commands, updates, troubleshooting, and removal, or the [OpenClaw guide](docs/openclaw.md) for CLI registration.
+
+## MCP tools
+
+The server is named `FC27` and exposes 12 tools. Client-specific name prefixes may differ.
+
+| Tool | Purpose |
+| --- | --- |
+| `status` | Inspect service, session, synchronization, policy, and backoff readiness. |
+| `catalog_query` | Search and compare local player-card definitions. |
+| `club_query` | Read the latest complete local owned-item mirror. |
+| `squad_query` | Read live squad slots, formations, tactics, and supported options. |
+| `sync_club` | Refresh coins and inventory into the local account database. |
+| `market_search` | Obtain live EA listings and concrete trade IDs. |
+| `price_context` | Refresh reference prices and compare history, holdings, costs, and net proceeds. |
+| `content_query` | Read Season, objective, and Evolution content and progress. |
+| `sbc_query` | Read cached SBC sets, challenges, requirements, and status. |
+| `sbc_refresh` | Refresh current SBC state from the authenticated Web App. |
+| `sbc_solve` | Generate validated owned-only and purchase-budget plans. |
+| `execute_actions` | Perform an exact, user-approved batch of account operations. |
+
+Full parameter, result, and error definitions are documented in the [MCP contract](docs/mcp-contract.md).
+
+## Execution policy
+
+The default `suggest` policy permits implemented account operations, but **the Agent must ask for explicit user approval before every new execution batch**. It must first present the exact targets, player items, price limits or tactical changes, and irreversible effects.
+
+- A request to complete an SBC authorizes discovery and planning, not purchases or submission.
+- Saving and submitting an SBC require separate approvals. A save-only request must not consume players.
+- Changed targets, limits, or a rebuilt stale-state batch require renewed approval.
+- Queries, local price recording, automatic synchronization, and planning do not require account-write approval.
+- Unknown write outcomes require verification or reconciliation of the original action, not an automatic retry.
+
+`policy.json` is the execution authority; the Agent cannot override it. Defaults allow one action per batch and cap individual purchases, batch spend, and daily spend at 700 coins each. Users may adjust these local limits or select `observe` to disable all account writes. See the [execution policy](docs/execution-policy.md).
+
+The server requires `confirmed=true` for new writes in every enabled mode, including `auto`. This value declares approval; it does not independently prove human consent. Tool descriptions and Server instructions cannot guarantee model behavior. Use a client that visibly presents and requests approval for account writes.
+
+## Data and limitations
+
+- **Catalog:** `data/catalog.sqlite` stores card definitions. Queries do not refresh it; catalog maintenance is a separate operator action.
+- **Account state:** `data/accounts/<persona_id>/runtime.sqlite` stores Persona-specific inventory, price observations, SBC solutions, and action history.
+- **Private data:** Databases, raw input archives, session credentials, and logs are not distributed with the code. Redact diagnostic material before sharing it.
+- **Solver scope:** Automatic SBC candidates exclude protected, loan, special, Evolution, and current active-squad items. Unsupported requirements block solving; not every SBC is supported.
+- **Result interpretation:** Optimality applies only to the reported candidate domain or local neighborhood. Reference prices do not guarantee availability, sale proceeds, or profit. Higher purchase budgets may exceed the request timeout; compare levels incrementally.
+- **Deployment scope:** This is a local, single-user system, not a public multi-user service. Do not expose its local ports to the internet.
+
+## Development
 
 ```bash
 npm run check
 .venv/bin/python -m unittest discover -s tests
 ```
 
-`check` 检查 Python 语法及浏览器扩展，不会执行真实账户操作。自动测试使用本地 fixture；需要来源数据库的测试在输入缺失时会跳过。完整安装验收仍需用户自己登录 EA Web App。
+`check` validates Python syntax and the browser extension. Automated tests use local fixtures and do not perform live EA account operations; source-database tests may skip when their input is unavailable. Live installation acceptance requires the user to sign in to the Web App.
 
-## 文档与许可
+## Documentation
 
-- [MCP 工具及参数契约](docs/mcp-contract.md)
-- [SBC 规划与执行契约](docs/sbc-contract.md)
-- [系统架构](docs/architecture.md)
-- [数据库设计](docs/database-schema.md)
-- [历史验收与来源清单](docs/source-artifacts.md)
-- [MIT License](LICENSE)
-- [第三方内容及使用限制](NOTICE.md)
+- [Installation](docs/install.md)
+- [OpenClaw integration and macOS service](docs/openclaw.md)
+- [MCP contract](docs/mcp-contract.md)
+- [Execution policy](docs/execution-policy.md)
+- [SBC planning and execution](docs/sbc-contract.md)
+- [Architecture](docs/architecture.md)
+- [Database schema](docs/database-schema.md)
+- [Source artifacts](docs/source-artifacts.md)
 
-项目代码采用 MIT 许可。该许可不授予 EA、FUT.GG 或其他第三方数据、素材、商标、账户接口的使用权，也不替代上游代码许可。EA 自动化和 FUT.GG 数据访问可能受到其服务规则限制，用户应自行核实并承担账户风险。本项目非官方，不提供验证码、验证流程、限流或访问控制绕过能力。
+## License and third-party services
+
+Original project code and documentation are licensed under the [MIT License](LICENSE). Third-party source, data, artwork, trademarks, and service access remain subject to their respective licenses and terms.
+
+This project is unofficial and is not affiliated with or endorsed by Electronic Arts or FUT.GG. Automated access may violate applicable service rules or result in account restrictions. The project does not bypass CAPTCHA, verification, rate limits, transfer restrictions, or access controls. Review [NOTICE](NOTICE.md) and the applicable service terms before use.

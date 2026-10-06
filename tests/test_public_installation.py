@@ -42,7 +42,7 @@ class PublicInstallationTest(unittest.TestCase):
                 self.assertIsNone(private_pattern.search(path.read_text(encoding="utf-8")))
 
     def test_installation_document_links_resolve(self):
-        for relative in ("README.md", "docs/install.md", "docs/openclaw.md", "data/README.md"):
+        for relative in ("README.md", "README.zh-CN.md", "docs/install.md", "docs/openclaw.md", "data/README.md"):
             path = PROJECT_ROOT / relative
             text = path.read_text(encoding="utf-8")
             for target in re.findall(r"\[[^\]]+\]\(([^)]+)\)", text):
