@@ -1,7 +1,5 @@
 # FC27 MCP contract
 
-Updated: 2026-10-06
-
 Server name: `FC27`
 
 Server version: `0.6.0`
@@ -213,7 +211,7 @@ Squad action fields follow the current Web App contract:
 
 These actions apply one coherent Web App save and then independently reload the target squad. Timeout results use `SQUAD_WRITE_OUTCOME_UNKNOWN`; callers read `squad_query` and never retry automatically.
 
-Catalog rebuild is an operator maintenance action and is not advertised to ordinary Agents. Run `scripts/refresh_catalog.py`; replacement occurs only after complete validation.
+Catalog rebuild is an operator maintenance action and is not advertised to ordinary Agents. Run `scripts/refresh_catalog.py`; the converter checks integrity, foreign keys, counts, and mappings before replacement, and the refresh then performs final catalog validation. Stop the daemon and retain a backup as described in the [data guide](../data/README.md#build-or-refresh-the-catalog).
 
 ## Operator-only daemon RPCs
 

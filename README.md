@@ -6,6 +6,8 @@ A self-hosted Model Context Protocol (MCP) server for EA SPORTS FC 27 Ultimate T
 
 The Agent selects strategies and evaluates alternatives. The MCP server supplies facts, state, calculations, validation, and explicit operations. Users sign in through the official EA Web App; raw session credentials remain in page memory.
 
+The project is distributed as source for local, single-user deployment. Current components identify version `0.6.0`; no tagged release or browser-store package is published. See the [changelog](CHANGELOG.md) for changes and the [contribution guide](CONTRIBUTING.md) for testing and issue reports.
+
 ## Features
 
 - **Player and inventory queries** — Search card definitions and identify exact owned copies across the Club, SBC Storage, Unassigned items, and Transfer List.
@@ -31,7 +33,7 @@ Live-account validation currently covers macOS and Chromium-based browsers. Comm
 
 ### Install and start the local service
 
-Clone the repository, or extract a source copy you can access, then create the Python environment:
+Clone the repository, then create the Python environment:
 
 ```bash
 git clone https://github.com/liusihang/fc27-copilot.git
@@ -78,6 +80,8 @@ Keep the daemon running: the stdio adapter does not start it. Set the client too
 No extension ID or copied EA token is required. The extension exposes one optional setting for a different local server address. The internal `/mcp` endpoint is not advertised as a general-purpose Streamable HTTP transport.
 
 See the [installation guide](docs/install.md) for Windows commands, updates, troubleshooting, and removal, or the [OpenClaw guide](docs/openclaw.md) for CLI registration.
+
+When updating, stop the daemon, preserve local policy and catalog changes, update the code and Python dependencies, and run the checks plus `npm run build:extension`. Then restart the daemon, reload the unpacked extension, refresh the Web App, and reconnect the MCP client. Reloading an old `dist` directory does not update the extension. The [upgrade procedure](docs/install.md#updating) includes commands and conflict handling.
 
 ## Player catalog and updates
 
@@ -158,6 +162,8 @@ npm run check
 
 `check` validates Python syntax and the browser extension. Automated tests use local fixtures and do not perform live EA account operations; source-database tests may skip when their input is unavailable. Live installation acceptance requires the user to sign in to the Web App.
 
+CI runs offline tests, catalog validation, and extension checks/build on a clean checkout. It does not validate live EA behavior or prove that prior Git history is free of private information. See [CONTRIBUTING](CONTRIBUTING.md) for the manual read-only checklist and publication boundaries.
+
 ## Documentation
 
 - [Installation](docs/install.md)
@@ -167,7 +173,8 @@ npm run check
 - [SBC planning and execution](docs/sbc-contract.md)
 - [Architecture](docs/architecture.md)
 - [Database schema](docs/database-schema.md)
-- [Source artifacts](docs/source-artifacts.md)
+- [Contributing and testing](CONTRIBUTING.md)
+- [Changelog](CHANGELOG.md)
 
 ## License and third-party services
 

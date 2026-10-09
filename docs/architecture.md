@@ -1,9 +1,7 @@
 # Architecture
 
-Date: 2026-09-19
-
 ```text
-OpenClaw
+MCP client and Agent (OpenClaw or another stdio client)
   │ MCP stdio
   ▼
 FC27 MCP adapter
@@ -21,23 +19,25 @@ fc27d
 
 ## Module boundaries
 
-`CatalogModule` owns public player/card data, normalized lookup relations, catalog validation and atomic replacement.
+`fc27/catalog.py` owns local player/card queries and normalized lookup relations. Operator scripts import, refresh, and validate the bundled catalog independently of account synchronization.
 
-`AccountStateModule` owns identity selection, full/targeted synchronization and current owned-item state.
+`fc27/account.py`, `fc27/runtime.py`, and `fc27/auto_sync.py` own account reads, Persona-bound persistence, and serialized automatic synchronization. A partial read never removes items from the latest complete mirror; unchanged owned-item state retains its version.
 
-`MarketModule` owns FUT.GG reference-price changes, EA market scan aggregates and deterministic fee/profit calculations.
+`fc27/market.py` owns FUT.GG reference-price changes, EA market scan aggregates, and deterministic fee/profit calculations.
 
-`ContentModule` normalizes objective groups/tasks, account evolution slots, FUT.GG public evolutions and SBC summaries behind one discovery interface.
+`fc27/content.py` normalizes Season levels, objective groups/tasks, account Evolution slots, and FUT.GG public Evolution definitions. SBC discovery is separate: `sbc_refresh` captures current EA facts and `sbc_query` reads persisted facts.
 
-`SbcModule` owns captured requirement normalization, EA-native fillable field-slot layouts, Agent-required exact item constraints, incremental purchase-budget branching, residual market-column generation, bounded OR-Tools CP-SAT realization, owned-only solution persistence and independent validation. Its interface remains one `sbc_solve` operation with a zero-default `purchase_budget`; model construction, frontier reduction, proof scope and status mapping stay inside the module. The Agent selects which candidate to use and whether to request the next purchase level.
+`fc27/sbc.py` and `fc27/sbc_optimizer.py` own requirement normalization, EA-native fillable slots, exact mandatory items, incremental purchase-budget branching, residual market candidates, bounded CP-SAT realization, owned-only solution persistence, and independent validation. Their Agent interface is `sbc_solve` with `purchase_budget=0` by default. The Agent selects a plan and decides whether another purchase level is useful. See the [SBC contract](sbc-contract.md) for chemistry, fixed slots, and proof limits.
 
-`ExecutionModule` receives exact actions. It enforces policy, stale-state checks, idempotency and post-operation readback.
+`fc27/execution.py`, `fc27/policy.py`, and `fc27/actions.py` enforce policy, exact-batch confirmation, stale-state checks, idempotency, dispatch, and independent readback. `fc27/squad.py` normalizes live playing-squad state and its change hash.
+
+`fc27/mcp.py` defines tool descriptions, schemas, Server instructions, and response envelopes. `mcp_stdio.py` forwards the stdio protocol to `fc27/daemon.py`; it does not launch the daemon. The browser extension keeps raw session credentials in page memory and exposes only structured operations and public session state.
 
 ## Database decision
 
 The catalog and runtime databases are physically separate. Catalog refresh can build and atomically replace `catalog.sqlite` without replacing club state or operation history.
 
-## Schema correction discovered during source validation
+## Rarity identity
 
 The supplied data uses FUT.GG `rarity_id=718` for Rare Gold, Rare Silver and Rare Bronze. Therefore `rarities` uses the composite key `(rarity_id, quality)`, and `cards` references both fields. A single-column `rarity_id` key would merge three distinct catalog values and lose information.
 
@@ -49,6 +49,6 @@ The Agent decides targets, prices, priorities and whether a candidate is desirab
 
 The persistent Web App content script requests one bounded daemon poll through the extension service worker. This message-scoped request works with Manifest V3 suspension. `fc27d` requeues an exact pending request if the HTTP response connection closes before delivery. Public login and mutation events enter one daemon-owned synchronization coordinator that shares the execution lock with explicit actions.
 
-## Live acceptance boundary
+## Verification boundary
 
-Offline tests prove catalog integrity, persistence behavior, MCP contracts and bridge mechanics. EA endpoint paths, response fields, pagination completion and SBC structures require a read-only test using the user's authenticated FC27 Web App session.
+Offline tests check catalog integrity, persistence behavior, MCP contracts, and bridge mechanics. They do not establish current EA endpoint behavior. Response fields, pagination, slots, chemistry, and browser operations need a fresh read-only comparison against an authenticated Web App. Writes require a separate exact approval, even during testing. See [CONTRIBUTING](../CONTRIBUTING.md#manual-read-only-verification).

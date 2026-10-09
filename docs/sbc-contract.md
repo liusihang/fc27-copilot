@@ -1,10 +1,8 @@
 # SBC capture, solving, and execution contract
 
-Updated: 2026-10-06
-
 ## Agent and tool boundary
 
-`FC27:sbc_refresh` captures and persists EA facts. `FC27:sbc_query` reads the persisted local cache without contacting EA. `FC27:sbc_solve` requires both `set_id` and `challenge_id`, applies a caller-provided objective through OR-Tools CP-SAT, and returns exact owned item IDs with solver and independent validation evidence. The Agent chooses the challenge, objective, and any mandatory owned items. Saving and submission occur only through exact `FC27:execute_actions` batches.
+`FC27:sbc_refresh` captures and persists EA facts. `FC27:sbc_query` reads the persisted local cache without contacting EA. `FC27:sbc_solve` requires both `set_id` and `challenge_id`, solves owned items with OR-Tools CP-SAT, and builds positive-purchase plans through residual replacement search with CP-SAT fallback. It returns exact identities, independent validation, and bounded proof scope. The Agent chooses the challenge, objective, and mandatory owned items. Saving and submission occur only through exact `FC27:execute_actions` batches.
 
 Normal SBC responses omit raw EA evidence. `include_raw=true` is reserved for unsupported-requirement diagnosis and contract development.
 

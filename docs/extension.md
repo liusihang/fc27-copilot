@@ -42,6 +42,8 @@ The extension owns:
 
 `fc27d` owns rate limits, policy, persistence, idempotency, synchronization, readback, and MCP. The MCP client Agent owns strategy decisions and must ask the user before every new account-write batch.
 
-## Current acceptance boundary
+## Updates and validation
 
-Version `0.5.0` passed direct-connection, login automatic synchronization, objective, evolution, and SBC read-only acceptance on 2026-09-19. Account writes remain governed by `policy.json` and were not used during this acceptance.
+After updating source code, run `npm run validate:extension` and `npm run build:extension`, reload the unpacked extension, and refresh the Web App. Reloading `dist` without rebuilding it uses the previous files. See the [upgrade procedure](install.md#updating).
+
+Automated checks validate the manifest, JavaScript syntax, imports, and selected bridge contracts. They do not replace a read-only comparison with the current EA Web App. Follow the [manual checklist](../CONTRIBUTING.md#manual-read-only-verification) after changing the page adapter. Account writes always require separate exact user approval.

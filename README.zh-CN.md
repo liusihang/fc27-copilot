@@ -6,6 +6,8 @@
 
 Agent 负责策略选择和方案比较。MCP 提供事实、状态、计算、校验及明确的操作接口。用户通过官方 EA Web App 自行登录，原始会话凭据仅保留在页面内存中。
 
+项目以源码形式提供，面向本机单用户部署。当前组件版本为 `0.6.0`，尚未发布正式 tag 或浏览器商店安装包。变更见[更新记录](CHANGELOG.md)，测试和问题报告方式见[贡献指南](CONTRIBUTING.md)。
+
 ## 功能
 
 - **球员与库存查询** — 查询卡片定义，识别俱乐部、SBC 仓库、未分配物品和转会列表中的具体球员副本。
@@ -27,11 +29,11 @@ Agent 负责策略选择和方案比较。MCP 提供事实、状态、计算、�
 
 仓库已附带可直接使用的球员目录。首次安装无需下载目录，离线查询球员也不需要 EA 登录。
 
-当前真实账户验收覆盖 macOS 和 Chromium 浏览器。以下命令使用 POSIX Shell；Windows 对应命令见[安装指南](docs/install.md)。
+当前真实账户验收覆盖 macOS 和 Chromium 浏览器。以下命令使用 POSIX Shell；Windows 对应命令见[安装指南](docs/install.zh-CN.md)。
 
 ### 安装并启动本地服务
 
-克隆仓库，或解压有权访问的源代码副本，然后创建 Python 环境：
+克隆仓库，然后创建 Python 环境：
 
 ```bash
 git clone https://github.com/liusihang/fc27-copilot.git
@@ -77,7 +79,9 @@ npm run build:extension
 
 无需填写扩展 ID 或复制 EA token。扩展只提供一个可选设置，用于修改本机服务地址。内部 `/mcp` 入口不作为通用 Streamable HTTP 传输接口提供。
 
-Windows 命令、更新、故障排查和卸载方式见[安装指南](docs/install.md)；OpenClaw CLI 注册方式见[专用说明](docs/openclaw.md)。
+Windows 命令、更新、故障排查和卸载方式见[安装指南](docs/install.zh-CN.md)；OpenClaw CLI 注册方式见[专用说明](docs/openclaw.md)。
+
+升级时先停止服务并保留本地策略及目录差异，再更新代码、Python 依赖，执行检查和 `npm run build:extension`。随后启动服务、重载解压缩扩展、刷新 Web App，并重新连接 MCP 客户端。只重载旧 `dist` 不会更新扩展文件。具体命令和冲突处理见[升级步骤](docs/install.zh-CN.md#更新)。
 
 ## 球员目录与更新
 
@@ -158,16 +162,19 @@ npm run check
 
 `check` 检查 Python 语法及浏览器扩展。自动测试使用本地 fixture，不执行真实 EA 账户操作；来源数据库缺失时，相应测试可能跳过。真实安装验收需要用户自行登录 Web App。
 
+CI 在干净副本上运行离线测试、目录校验和扩展检查及构建，不验证真实 EA 行为，也不能证明旧 Git 历史不含个人信息。手动只读检查和公开内容边界见[贡献指南](CONTRIBUTING.md)。
+
 ## 文档
 
-- [安装指南](docs/install.md)
+- [安装指南](docs/install.zh-CN.md)
 - [OpenClaw 集成与 macOS 常驻服务](docs/openclaw.md)
 - [MCP 契约](docs/mcp-contract.md)
 - [执行策略](docs/execution-policy.md)
 - [SBC 规划与执行](docs/sbc-contract.md)
 - [系统架构](docs/architecture.md)
 - [数据库设计](docs/database-schema.md)
-- [来源清单](docs/source-artifacts.md)
+- [贡献与测试](CONTRIBUTING.md)
+- [更新记录](CHANGELOG.md)
 
 ## 许可与第三方服务
 

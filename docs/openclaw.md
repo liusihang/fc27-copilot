@@ -61,4 +61,4 @@ Stopping the macOS service does not delete its database:
 launchctl bootout "gui/$(id -u)" "$HOME/Library/LaunchAgents/io.github.liusihang.fc27d.plist"
 ```
 
-Existing dated acceptance reports describe earlier environments and policies; they are not installation prerequisites or evidence of your account's current state.
+After a source update, follow the [upgrade procedure](install.md#updating), then reload the MCP connection and probe it again. A successful probe checks discovery, not the current EA login or inventory. Use `status` and fresh account reads to establish readiness.

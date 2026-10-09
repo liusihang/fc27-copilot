@@ -1,7 +1,5 @@
 # Database schema contract
 
-Date: 2026-09-18
-
 ## Identifier rules
 
 | Field | Scope | Rule |
@@ -11,7 +9,7 @@ Date: 2026-09-18
 | `futgg_id` | source record | Unique FUT.GG record used for refresh reconciliation. |
 | `item_id` | owned item | Concrete account-owned instance. Never substitutes for `card_ea_id`. |
 | `trade_id` | auction | Concrete market listing. Never substitutes for `item_id`. |
-| `sync_id` | synchronization | Provenance for current owned-item state. |
+| `sync_id` | owned-item state | Version of the latest complete mirror; unchanged owned-item state retains it. |
 | `action_id` | operation | Caller-visible operation identity. |
 | `batch_id` | operation group | Caller-visible ordered batch identity. |
 
@@ -38,7 +36,7 @@ Each database binds to exactly one Persona. The Persona ID belongs in `account_s
 | Table | Responsibility | Redundancy decision |
 | --- | --- | --- |
 | `account_state` | Persona, club, platform, coins, latest complete sync | One row per runtime DB. |
-| `sync_runs` | Synchronization lifecycle | One row per attempted sync. |
+| `sync_runs` | Synchronization lifecycle and state versions | Keeps completion and provenance evidence. |
 | `sync_parts` | Per-area page/item counts and completeness | Required to prove whether removal is safe. |
 | `club_items` | Current owned-item state | Does not repeat catalog names or ratings. |
 | `inventory_changes` | Added, moved, removed, or changed items | Stores changes only, not full snapshots. |
@@ -70,6 +68,8 @@ A full synchronization updates and removes current items only when every request
 
 Local `protected`, `acquisition_cost`, and `first_seen_at` values survive synchronization. EA observations update location, tradeability, loan usage, last-seen time, and provenance.
 
+If authoritative owned-item state is unchanged, another complete observation reuses its `sync_id`. Coin values, observation times, and listing observations may update without changing the owned-item version. Consumers must check both completeness and observation time; an unchanged version does not mean no observation occurred.
+
 ## Catalog replacement invariant
 
-Refresh writes `catalog.sqlite.new`, validates integrity, foreign keys, counts, unique IDs, primary positions, PlayStyle mappings, and Role mappings, then atomically replaces `catalog.sqlite`. Runtime databases are never part of this replacement.
+Refresh downloads temporary source data and converts it through `catalog.sqlite.new`. The converter validates integrity, foreign keys, source counts, primary positions, and normalized mappings before checkpointing and atomic replacement. A final validation reports unique IDs, mapping coverage, counts, metadata, and checksum after replacement. Stop the daemon and keep a backup until final validation succeeds. Runtime databases are never part of this replacement; see the [data guide](../data/README.md#build-or-refresh-the-catalog).

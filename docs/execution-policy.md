@@ -1,6 +1,6 @@
 # Execution policy and audit contract
 
-Updated: 2026-10-06. Dated acceptance sections below describe historical policies, not today's defaults.
+This document describes the current execution policy. Default values are defined in `policy.json` and `policy.example.json`.
 
 ## Authority
 
@@ -78,16 +78,3 @@ For the same SBC solution, pending, running, complete, outcome-unknown, readback
 Reusing a `batch_id` with the same `expected_sync_id` and identical ordered action objects returns the stored batch and action results with `replayed=true`. The dispatcher is not called again.
 
 Reusing a batch ID with different actions, or reusing an action ID or idempotency key in another batch, returns `IDEMPOTENCY_CONFLICT` with recovery guidance.
-
-## Issue #16 acceptance
-
-- Unit tests proved observe rejection, suggest confirmation, stale-state rejection, protected-item rejection, spend and ownership limits, unique identifiers, accepted-action audit rows, and replay without redispatch.
-- A simulated accepted batch produced one complete batch row and one complete action row, then returned the same result on replay while the dispatcher call count remained one.
-- The live Persona runtime remained in `observe`; a complete synthetic `buy_now` request returned `EXECUTION_DISABLED` and left `action_batches/actions` at `0/0`.
-- No live EA write method was invoked.
-
-## Issue #19 acceptance
-
-The user approved a historical bounded `suggest` policy with a 45,000-coin reserve and only Buy Now, move, and listing enabled. On 2026-09-18, a 700-coin Buy Now, move to Tradepile, and 650/700 listing completed on the authenticated PC Persona. Complete synchronization proved the coin delta, acquired item ID, destination, active trade ID, and exact prices. Replaying the purchase and listing batches returned their stored results without dispatching another EA action.
-
-Detailed evidence is recorded in `docs/live-execution-acceptance-2026-09-18.md`. This acceptance keeps `auto` disabled.

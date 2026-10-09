@@ -258,7 +258,7 @@ def import_catalog(source_path, target_path):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Normalize the supplied FC27 v2 catalog.")
+    parser = argparse.ArgumentParser(description="Convert an FC27 source v2 database to catalog schema v3.")
     parser.add_argument(
         "--source",
         default=PROJECT_ROOT / "data" / "source" / "fc27-v2.sqlite",

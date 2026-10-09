@@ -4,6 +4,8 @@ The repository includes `catalog.sqlite`, a ready-to-use FUT.GG player-card snap
 
 It contains card definitions, player attributes, positions, PlayStyles, Roles, and their mappings. It does not contain account inventory, session credentials, action history, or market prices. This third-party data is not covered by the project's MIT license; use only data you are authorized to access.
 
+The repository records the dataset's provenance but supplies no separate database redistribution grant. Do not infer one from the code license or from inclusion of the file. See [NOTICE](../NOTICE.md).
+
 For first installation, validate the bundled database without downloading anything:
 
 ```bash
