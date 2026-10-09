@@ -8,6 +8,7 @@ dist/
 data/*.sqlite
 data/*.sqlite-*
 data/*.sqlite.*
+!data/catalog.sqlite
 data/source/
 data/accounts/
 logs/

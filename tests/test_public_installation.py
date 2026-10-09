@@ -1,16 +1,41 @@
 import json
 import re
+import sqlite3
 import unittest
 from pathlib import Path
 from urllib.parse import urlsplit
 
 from fc27.mcp import SERVER_VERSION
+from fc27.schema import CATALOG_SCHEMA_VERSION
+from scripts.validate_catalog import TABLES
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
 class PublicInstallationTest(unittest.TestCase):
+    def test_bundled_catalog_is_standalone_and_contains_only_catalog_tables(self):
+        path = PROJECT_ROOT / "data/catalog.sqlite"
+        self.assertTrue(path.is_file())
+        connection = sqlite3.connect(f"{path.as_uri()}?mode=ro&immutable=1", uri=True)
+        try:
+            tables = {
+                row[0]
+                for row in connection.execute("SELECT name FROM sqlite_schema WHERE type = 'table'")
+            }
+            self.assertEqual(tables, set(TABLES) | {"catalog_meta"})
+            self.assertEqual(connection.execute("PRAGMA integrity_check").fetchone()[0], "ok")
+            self.assertEqual(connection.execute("PRAGMA foreign_key_check").fetchall(), [])
+            metadata = dict(connection.execute("SELECT key, value FROM catalog_meta"))
+            self.assertEqual(metadata["schema_version"], CATALOG_SCHEMA_VERSION)
+            self.assertEqual(metadata["source"], "FUT.GG")
+            for table, key in (("cards", "card_count"), ("players", "player_count")):
+                count = connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+                self.assertGreater(count, 0)
+                self.assertEqual(int(metadata[key]), count)
+        finally:
+            connection.close()
+
     def test_license_and_component_versions_match(self):
         package = json.loads((PROJECT_ROOT / "package.json").read_text(encoding="utf-8"))
         manifest = json.loads((PROJECT_ROOT / "extension/manifest.json").read_text(encoding="utf-8"))

@@ -18,6 +18,8 @@ This is a self-hosted, single-user local integration, not a public hosted servic
 
 ## Data and diagnostics
 
+The repository includes `data/catalog.sqlite`, a FUT.GG-derived player-card snapshot, and its validation manifest. This third-party dataset is not covered by the project's MIT license, and inclusion does not grant additional data or service-access rights. The snapshot is dated; it is not a live catalog or a price feed.
+
 Account databases and logs are private local data and must not be bundled in releases. Published acceptance documents use redacted account names/Persona identifiers and synthetic item/trade IDs; dates, public card IDs, constraints, and measured results remain historical evidence. They do not describe the reader's account or guarantee future compatibility. Redacting the current tree does not remove information from earlier Git commits.
 
 EA's rules prohibit bots, automation, and auto-buyers; FUT.GG's linked service terms restrict automated access and copying except where expressly permitted. MIT licensing does not remove those restrictions or account risk. Verify the applicable rules and permissions before use. The project makes no guarantee of account safety, profit, complete SBC support, or global minimum market cost.

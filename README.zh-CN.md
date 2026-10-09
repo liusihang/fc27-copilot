@@ -24,7 +24,8 @@ Agent 负责策略选择和方案比较。MCP 提供事实、状态、计算、�
 - Node.js 18 或更新版本。
 - 启用浏览器扩展的 Chrome 或 Edge。
 - 支持 stdio 的 MCP 客户端。
-- 从有权使用的数据来源获得的本地球员目录。
+
+仓库已附带可直接使用的球员目录。首次安装无需下载目录，离线查询球员也不需要 EA 登录。
 
 当前真实账户验收覆盖 macOS 和 Chromium 浏览器。以下命令使用 POSIX Shell；Windows 对应命令见[安装指南](docs/install.md)。
 
@@ -39,10 +40,9 @@ python3 -m venv .venv
 .venv/bin/python -m pip install -r requirements.txt
 ```
 
-按照[数据说明](data/README.md)导入已有的兼容数据库。数据提供方允许访问时，也可以从 FUT.GG 构建目录：
+校验随仓库提供的目录，并准备扩展：
 
 ```bash
-.venv/bin/python scripts/refresh_catalog.py --out data/catalog.sqlite
 .venv/bin/python scripts/validate_catalog.py data/catalog.sqlite
 npm run check
 npm run build:extension
@@ -78,6 +78,32 @@ npm run build:extension
 无需填写扩展 ID 或复制 EA token。扩展只提供一个可选设置，用于修改本机服务地址。内部 `/mcp` 入口不作为通用 Streamable HTTP 传输接口提供。
 
 Windows 命令、更新、故障排查和卸载方式见[安装指南](docs/install.md)；OpenClaw CLI 注册方式见[专用说明](docs/openclaw.md)。
+
+## 球员目录与更新
+
+仓库附带的 `data/catalog.sqlite` 是 **2026 年 9 月 18 日**完成的 FUT.GG 快照，包含 **19,676 张卡片**和 **19,595 名球员**，使用目录 schema v3，大小约 **18.4 MiB**。它保存卡片定义及映射，不含账号库存、凭据或市场价格历史。`data/catalog-manifest.json` 记录该快照的数量、元数据和校验值。
+
+这份快照不是实时数据。`catalog_query` 只查询本地目录；登录和 `sync_club` 更新的是账号库存，不会更新目录。需要获取新卡片时，在项目目录中执行维护。访问前应确认数据提供方允许此类使用。
+
+1. 替换数据库前先停止守护进程。前台运行时按 `Ctrl+C`；macOS 常驻服务使用[数据说明中的停止和启动命令](data/README.md#build-or-refresh-the-catalog)。
+2. 保留备份，从 FUT.GG 重建目录，并校验新快照：
+
+```bash
+cp data/catalog.sqlite data/catalog.sqlite.backup
+.venv/bin/python scripts/refresh_catalog.py --out data/catalog.sqlite
+.venv/bin/python scripts/validate_catalog.py data/catalog.sqlite \
+  --write-manifest data/catalog-manifest.json
+```
+
+3. 确认校验结果为 `"ok": true`，再按原启动方式重启服务。前台启动命令为：
+
+```bash
+.venv/bin/python fc27d.py
+```
+
+更新脚本下载临时源数据，将其转换为标准目录，并在转换器的完整性、映射和数量检查通过后替换数据库。最终校验会输出快照时间、数量及校验值。此过程不修改 `data/accounts/`，也不需要 EA 登录。维护失败时先检查错误，再决定是否启动服务；新目录通过校验前保留备份。
+
+可在需要新卡片时更新，也可自行每几天维护一次。项目不会安装定时更新任务。Windows 命令、可选代理、源数据库导入及恢复方式见[数据说明](data/README.md)。该文件现已纳入 Git；本地刷新后，后续代码更新可能发生文件冲突，更新代码前应备份目录和 manifest。
 
 ## MCP 工具
 
@@ -116,9 +142,9 @@ Windows 命令、更新、故障排查和卸载方式见[安装指南](docs/inst
 
 ## 数据与使用限制
 
-- **球员目录：** `data/catalog.sqlite` 保存卡片定义。查询不刷新目录，目录维护由部署者单独执行。
+- **球员目录：** `data/catalog.sqlite` 是随仓库提供的卡片定义快照。查询不刷新目录，目录维护由部署者单独执行。
 - **账户状态：** `data/accounts/<persona_id>/runtime.sqlite` 保存对应 Persona 的库存、价格观察、SBC 方案和操作历史。
-- **私有数据：** 数据库、原始输入包、会话凭据和日志不随代码分发。分享诊断资料前应先脱敏。
+- **私有数据：** 账号数据库、原始输入包、会话凭据、日志及 SQLite 辅助文件不随代码分发；只附带球员目录。分享诊断资料前应先脱敏。
 - **求解范围：** SBC 自动候选排除保护球员、租借卡、特殊卡、进化卡及当前活动球队阵容中的球员。未知条件会阻止求解，不保证支持所有 SBC。
 - **结果解释：** 最优性仅对结果注明的候选域或局部邻域成立。参考价格不保证可买到、卖出或获利。较高购买预算可能超过请求超时，应逐级比较。
 - **部署范围：** 本项目是本地单用户系统，不是公网多用户服务。不要将本机端口公开到互联网。

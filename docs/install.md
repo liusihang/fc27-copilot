@@ -29,14 +29,13 @@ py -3 -m venv .venv
 
 ## 2. 准备本地目录数据库
 
-数据库不包含在代码仓库中。使用有权使用且兼容的源数据库导入，或者在确认数据提供方允许访问的前提下从 FUT.GG 构建：
+仓库已附带 `data/catalog.sqlite`，首次安装无需从网络构建。它是 2026 年 9 月 18 日的 FUT.GG 快照，包含 19,676 张卡片和 19,595 名球员。先校验随仓库提供的数据库：
 
 ```bash
-.venv/bin/python scripts/refresh_catalog.py --out data/catalog.sqlite
 .venv/bin/python scripts/validate_catalog.py data/catalog.sqlite
 ```
 
-Windows 把 `.venv/bin/python` 替换为 `.\.venv\Scripts\python.exe`。已有源数据库的导入方式及可选代理设置见[数据说明](../data/README.md)。EA 登录不是构建目录的前提；未经授权的数据不应随发布包分发。
+Windows 把 `.venv/bin/python` 替换为 `.\.venv\Scripts\python.exe`。需要新卡片时，按照[数据说明](../data/README.md#build-or-refresh-the-catalog)停止服务、备份目录、从 FUT.GG 重建并校验，再启动服务。该过程不要求 EA 登录，也不更新账号数据库。源数据库导入和可选代理设置也见该说明。第三方数据不因随仓库提供而获得 MIT 授权。
 
 ## 3. 启动服务并安装扩展
 
@@ -100,7 +99,7 @@ Windows 的 `command` 为项目 `.venv\Scripts\python.exe` 的绝对路径，`ar
 
 ## 更新、故障与卸载
 
-- 更新代码前保留本地策略差异；更新后重新运行检查，重启服务，并在浏览器扩展页重新加载 `dist`。不要覆盖账户数据库。
+- 更新代码前保留本地策略差异，并备份自行刷新的 `data/catalog.sqlite` 和 `data/catalog-manifest.json`；这两个文件已纳入 Git，本地修改可能与上游快照冲突。更新后重新运行检查，重启服务，并在浏览器扩展页重新加载 `dist`。不要覆盖账户数据库。
 - `DAEMON_UNAVAILABLE`：检查服务是否运行、地址是否一致及代理是否错误转发了本机请求。使用代理时将 `127.0.0.1,localhost` 加入 `NO_PROXY`。
 - `EA_SESSION_REQUIRED` 或桥接断开：打开 Web App、自行登录或重新加载扩展；验证码由用户手动处理。
 - 结果不完整：先看 `meta.complete`、来源警告、记录观察时间和分页信息，不把空列表直接理解为“没有任务”。

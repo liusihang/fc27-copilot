@@ -24,7 +24,8 @@ The Agent selects strategies and evaluates alternatives. The MCP server supplies
 - Node.js 18 or later.
 - Chrome or Edge with the browser extension enabled.
 - An MCP client that supports stdio.
-- A local player catalog obtained from a source you are authorized to use.
+
+The repository includes a ready-to-use player catalog. No initial catalog download or EA login is required for offline player queries.
 
 Live-account validation currently covers macOS and Chromium-based browsers. Commands below use a POSIX shell; Windows equivalents are provided in the [installation guide](docs/install.md).
 
@@ -39,10 +40,9 @@ python3 -m venv .venv
 .venv/bin/python -m pip install -r requirements.txt
 ```
 
-Import an existing compatible database as described in the [data guide](data/README.md). Where access is permitted by the data provider, the catalog can also be built from FUT.GG:
+Validate the bundled catalog and prepare the extension:
 
 ```bash
-.venv/bin/python scripts/refresh_catalog.py --out data/catalog.sqlite
 .venv/bin/python scripts/validate_catalog.py data/catalog.sqlite
 npm run check
 npm run build:extension
@@ -78,6 +78,32 @@ Keep the daemon running: the stdio adapter does not start it. Set the client too
 No extension ID or copied EA token is required. The extension exposes one optional setting for a different local server address. The internal `/mcp` endpoint is not advertised as a general-purpose Streamable HTTP transport.
 
 See the [installation guide](docs/install.md) for Windows commands, updates, troubleshooting, and removal, or the [OpenClaw guide](docs/openclaw.md) for CLI registration.
+
+## Player catalog and updates
+
+The bundled `data/catalog.sqlite` is a FUT.GG snapshot completed on **September 18, 2026**. It contains **19,676 cards** and **19,595 players**, uses catalog schema v3, and is approximately **18.4 MiB**. It contains card definitions and mappings, not account inventory, credentials, or market-price history. Its counts, metadata, and checksum are recorded in `data/catalog-manifest.json`.
+
+The bundled snapshot is not live data. `catalog_query` reads it locally; login and `sync_club` update account inventory, not this catalog. To obtain newer cards, run maintenance from the project directory when access is permitted by the data provider:
+
+1. Stop the daemon before replacing its database. For a foreground daemon, press `Ctrl+C`; for the macOS background service, use the stop/start commands in the [data guide](data/README.md#build-or-refresh-the-catalog).
+2. Keep a backup, rebuild from FUT.GG, and validate the new snapshot:
+
+```bash
+cp data/catalog.sqlite data/catalog.sqlite.backup
+.venv/bin/python scripts/refresh_catalog.py --out data/catalog.sqlite
+.venv/bin/python scripts/validate_catalog.py data/catalog.sqlite \
+  --write-manifest data/catalog-manifest.json
+```
+
+3. Confirm that validation reports `"ok": true`, then restart the daemon using the same method as before. For a foreground daemon:
+
+```bash
+.venv/bin/python fc27d.py
+```
+
+The refresh downloads temporary source data, converts it to the normalized catalog, and replaces the database after the converter's integrity, mapping, and count checks. The final validation reports the snapshot dates, counts, and checksum. It does not modify `data/accounts/` or require an EA login. If maintenance fails, inspect the error before restarting; keep the backup until the new catalog has passed validation.
+
+Update when new cards are needed, or run maintenance every few days at your discretion. No scheduled catalog updater is installed. Windows commands, optional proxy settings, source imports, and recovery steps are in the [data guide](data/README.md). Because this file is now tracked, a locally refreshed catalog may conflict with a later Git update; back up your catalog and manifest before updating the code.
 
 ## MCP tools
 
@@ -116,9 +142,9 @@ The server requires `confirmed=true` for new writes in every enabled mode, inclu
 
 ## Data and limitations
 
-- **Catalog:** `data/catalog.sqlite` stores card definitions. Queries do not refresh it; catalog maintenance is a separate operator action.
+- **Catalog:** `data/catalog.sqlite` is the bundled card-definition snapshot. Queries do not refresh it; catalog maintenance is a separate operator action.
 - **Account state:** `data/accounts/<persona_id>/runtime.sqlite` stores Persona-specific inventory, price observations, SBC solutions, and action history.
-- **Private data:** Databases, raw input archives, session credentials, and logs are not distributed with the code. Redact diagnostic material before sharing it.
+- **Private data:** Account databases, raw input archives, session credentials, logs, and SQLite sidecar files are not distributed with the code. Only the player catalog is included. Redact diagnostic material before sharing it.
 - **Solver scope:** Automatic SBC candidates exclude protected, loan, special, Evolution, and current active-squad items. Unsupported requirements block solving; not every SBC is supported.
 - **Result interpretation:** Optimality applies only to the reported candidate domain or local neighborhood. Reference prices do not guarantee availability, sale proceeds, or profit. Higher purchase budgets may exceed the request timeout; compare levels incrementally.
 - **Deployment scope:** This is a local, single-user system, not a public multi-user service. Do not expose its local ports to the internet.
