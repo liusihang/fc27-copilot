@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/assets/hero.svg" alt="FC27 Copilot — Know your club. Plan your next move." width="100%">
+  <img src="docs/assets/hero.webp" alt="FC27 Copilot — Know your club. Plan your next move." width="100%">
 </p>
 
 # FC27 Copilot
